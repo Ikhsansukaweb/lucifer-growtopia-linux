@@ -1,0 +1,4 @@
+subjectAltName=DNS:unif-id.ssp.inmobi.com
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

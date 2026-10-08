@@ -1,0 +1,28 @@
+# Jangan commit kredensial!
+# Salin dari data/config.example.json
+
+data/accounts.json
+data/config.json
+data/*.log
+data/lucifer.log
+data/uji_tulis.txt
+data/laporan.txt
+
+# Hasil build
+enet/*.so
+enet/*.dylib
+enet/*.dll
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Data yang diunduh (bisa besar, ambil ulang dari server)
+data/items.dat
+data/world.dat
+
+# Editor
+.vscode/
+.idea/
+*.swp

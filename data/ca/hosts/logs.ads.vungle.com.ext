@@ -1,0 +1,4 @@
+subjectAltName=DNS:logs.ads.vungle.com
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

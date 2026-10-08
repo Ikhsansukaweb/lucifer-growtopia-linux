@@ -1,0 +1,4 @@
+subjectAltName=DNS:firebaselogging.googleapis.com
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

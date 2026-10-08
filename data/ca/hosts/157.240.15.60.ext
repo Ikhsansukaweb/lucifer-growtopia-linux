@@ -1,0 +1,4 @@
+subjectAltName=DNS:157.240.15.60
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

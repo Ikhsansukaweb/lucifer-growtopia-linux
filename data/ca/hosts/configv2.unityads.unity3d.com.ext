@@ -1,0 +1,4 @@
+subjectAltName=DNS:configv2.unityads.unity3d.com
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

@@ -1,0 +1,4 @@
+subjectAltName=DNS:57.144.193.32
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

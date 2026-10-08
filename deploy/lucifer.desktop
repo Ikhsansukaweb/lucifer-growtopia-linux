@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lucifer Linux
+GenericName=Growtopia Bot
+Comment=Dashboard & bot Growtopia (API Lua Lucifer V1.8)
+Exec=lucifer-desktop %u
+Icon=lucifer
+Terminal=false
+Categories=Game;Utility;
+Keywords=growtopia;bot;lucifer;lua;
+StartupNotify=true
+StartupWMClass=LuciferLinux

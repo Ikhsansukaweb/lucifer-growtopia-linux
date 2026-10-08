@@ -1,0 +1,4 @@
+subjectAltName=DNS:uct.service.usercentrics.eu
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

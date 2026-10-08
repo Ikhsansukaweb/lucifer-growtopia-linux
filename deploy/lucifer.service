@@ -1,0 +1,56 @@
+[Unit]
+Description=Lucifer Linux — bot Growtopia (API Lua Lucifer V1.8)
+Documentation=file:///opt/lucifer-linux/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lucifer
+Group=lucifer
+WorkingDirectory=/opt/lucifer-linux
+
+# Dashboard web (opsional). Untuk bot saja, ganti jadi:
+#   ExecStart=/opt/lucifer-linux/.venv/bin/lucifer run
+ExecStart=/opt/lucifer-linux/.venv/bin/lucifer web --host 127.0.0.1 --port 8787
+
+Environment=PYTHONUNBUFFERED=1
+Environment=NO_COLOR=1
+
+# Kredensial TIDAK ditulis di sini. Isi file terpisah lalu:
+#   sudo systemctl edit lucifer   -> tambahkan:
+#   [Service]
+#   EnvironmentFile=/etc/lucifer/credentials.env
+# Isi /etc/lucifer/credentials.env (chmod 600):
+#   LUCIFER_USER=NamaGrowID
+#   LUCIFER_PASS=sandi
+#   LUCIFER_SOCIAL_TOKEN=id_token_google
+EnvironmentFile=-/etc/lucifer/credentials.env
+
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# Pengerasan keamanan
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/lucifer-linux/data /opt/lucifer-linux/scripts
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+# Batas sumber daya (bot tidak butuh banyak)
+MemoryMax=512M
+CPUQuota=50%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lucifer
+
+[Install]
+WantedBy=multi-user.target

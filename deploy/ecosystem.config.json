@@ -1,0 +1,45 @@
+{
+  "apps": [
+    {
+      "name": "lucifer-web",
+      "script": ".venv/bin/lucifer",
+      "args": "web --host 0.0.0.0 --port 8787",
+      "cwd": "/opt/lucifer-linux",
+      "interpreter": "none",
+      "instances": 1,
+      "exec_mode": "fork",
+      "autorestart": true,
+      "watch": false,
+      "max_memory_restart": "512M",
+      "restart_delay": 10000,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "NO_COLOR": "1"
+      },
+      "error_file": "/var/log/lucifer/web-error.log",
+      "out_file": "/var/log/lucifer/web-out.log",
+      "merge_logs": true,
+      "time": true
+    },
+    {
+      "name": "lucifer-bot",
+      "script": ".venv/bin/lucifer",
+      "args": "run --log data/lucifer.log",
+      "cwd": "/opt/lucifer-linux",
+      "interpreter": "none",
+      "instances": 1,
+      "exec_mode": "fork",
+      "autorestart": true,
+      "max_memory_restart": "512M",
+      "restart_delay": 15000,
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "NO_COLOR": "1"
+      },
+      "error_file": "/var/log/lucifer/bot-error.log",
+      "out_file": "/var/log/lucifer/bot-out.log",
+      "merge_logs": true,
+      "time": true
+    }
+  ]
+}

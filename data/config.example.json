@@ -1,0 +1,41 @@
+{
+  "_catatan": "Salin jadi data/config.json lalu sesuaikan. Jangan taruh sandi di sini bila repo ini publik — pakai data/accounts.json (chmod 600) atau env LUCIFER_USER / LUCIFER_PASS / LUCIFER_SOCIAL_TOKEN.",
+  "_metode_login": "growid | legacy | token | google | apple | ubiconnect (lihat README bagian Login Google)",
+
+  "scripts_dir": "scripts",
+  "data_dir": "data",
+  "items_path": "data/items.dat",
+  "username": "ikhsan",
+  "hot_reload": true,
+  "auto_connect": true,
+  "listen_seconds": 0,
+  "log_file": "data/lucifer.log",
+
+  "accounts": [
+    {
+      "label": "main",
+      "username": "NamaGrowID",
+      "password": "sandiGrowID",
+      "method": "growid"
+    },
+    {
+      "label": "token1",
+      "username": "NamaGrowID",
+      "method": "token",
+      "ltoken": "ISI_LTOKEN_DARI_CLIENTDATA"
+    },
+    {
+      "label": "google1",
+      "username": "NamaGrowID",
+      "method": "google",
+      "mail": "email@gmail.com",
+      "social_token": "ISI_ID_TOKEN_GOOGLE"
+    },
+    {
+      "label": "legacy1",
+      "username": "NamaLama",
+      "password": "sandiLama",
+      "method": "legacy"
+    }
+  ]
+}

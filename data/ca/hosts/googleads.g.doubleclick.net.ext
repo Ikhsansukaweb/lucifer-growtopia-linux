@@ -1,0 +1,4 @@
+subjectAltName=DNS:googleads.g.doubleclick.net
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

@@ -1,0 +1,4 @@
+subjectAltName=DNS:mmg.whatsapp.net
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth

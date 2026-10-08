@@ -1,0 +1,6 @@
+# Lucifer Linux — dependensi Python
+# Catatan: ENet TIDAK lewat pip — dibangun dari enet/enet.cpp (lihat Makefile).
+
+lupa>=2.0          # runtime Lua 5.4 untuk skrip gaya Lucifer
+requests>=2.31     # endpoint server_data + login GrowID + login Google
+websocket-client>=1.7   # login Google lewat browser (Chrome DevTools Protocol)

@@ -1,0 +1,4 @@
+subjectAltName=DNS:l1-1.anzu.io
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
