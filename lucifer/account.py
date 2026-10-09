@@ -528,40 +528,20 @@ def client_data_minimal(protocol: int = 225, version: str = "5.58",
     return base64.b64encode(blok.encode()).decode()
 
 
+CHECKTOKEN_VALKEY: str = "40db4045f2d8c572efe8c4a060605726"
+
 def check_token(ltoken: str, timeout: int = 20,
                 client_data: str = "", meta: str = "") -> LoginResult:
-    """Validasi/segar-ulang `ltoken` lewat /player/growid/checktoken.
-
-    Berguna untuk memastikan token yang disimpan masih hidup sebelum connect,
-    supaya tidak menunggu sampai paket login ditolak server game.
-
-    PENTING: `clientData` WAJIB dikirim. Tanpa itu server membalas
-    `{"status":"failed","message":"Please try login again."}` walau
-    refreshToken-nya benar (terbukti lewat uji langsung).
-
-    `ltoken` di sini adalah **refreshToken** — nilai field `Token` di
-    `save.dat`, atau token hasil pemanggilan sebelumnya.
-
-    CATATAN JUJUR (hasil uji 2026-09-29): pesan `"Token is invalid."`
-    (status `redirect`) bersifat **generik** — token ngawur, token kosong, dan
-    token asli dari `save.dat` semuanya dibalas pesan yang sama persis. Jadi
-    pesan itu TIDAK berarti "tokennya salah"; ia berarti request-nya belum
-    memenuhi bentuk yang diharapkan. Yang membedakan hanya ada/tidaknya
-    `clientData`:
-        tanpa clientData -> status `failed`  ("Please try login again.")
-        dengan clientData -> status `redirect` ("Token is invalid.")
-    Lihat `docs/growtopia-android.md` bagian "Yang BELUM terbukti".
-    """
+    """Validasi/segar-ulang `ltoken` lewat /player/growid/checktoken (metode Nxrth)."""
     requests = _requests()
     s = requests.Session()
-    s.headers.update({"User-Agent": GAME_UA})
+    s.headers.update({"User-Agent": "UbiServices_SDK_2022.Release.9_PC64_ansi_static"})
     cd = client_data or client_data_minimal(meta=meta)
     try:
         r = s.post(
-            f"{LOGIN_HOST}/player/growid/checktoken",
+            f"{LOGIN_HOST}/player/growid/checktoken?valKey={CHECKTOKEN_VALKEY}",
             data={"refreshToken": ltoken, "clientData": cd},
-            headers={"X-Requested-With": "XMLHttpRequest",
-                     "Accept": "application/json, text/plain, */*"},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=timeout,
             allow_redirects=True,
         )
