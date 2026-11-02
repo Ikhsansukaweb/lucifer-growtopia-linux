@@ -533,6 +533,9 @@ class LuaEngine:
         g.Vector2 = self._class_vector("2")
         g.Vector3 = self._class_vector("3")
         self._register_features(g)
+        from .compat_deltax import pasang as _pasang_deltax  # noqa: PLC0415
+
+        _pasang_deltax(self)
 
     # ------------------------------------------------------------------ #
     # Fitur otomasi gaya deltaX
@@ -2063,6 +2066,9 @@ class _ThreadEngine:
         g.Vector2 = p._class_vector("2")
         g.Vector3 = p._class_vector("3")
         p._register_features(g)
+        from .compat_deltax import pasang as _pasang_deltax  # noqa: PLC0415
+
+        _pasang_deltax(p)
 
     def call(self, name: str, *args) -> bool:
         """Muat ulang semua skrip lalu panggil fungsi global `name`."""

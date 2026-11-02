@@ -1,0 +1,1794 @@
+[
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Antiban",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Protect Packet",
+  "alias": "m_antiban_protect_packet"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Antibounce",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Antiban V2",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Growz V2",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "slider",
+  "teks": "Speed Growz",
+  "alias": "speed_growz"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Moonwalk",
+  "alias": "cheat_config_moonwalk"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "No Walk",
+  "alias": "cheat_config_nowalk"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Fast Fall",
+  "alias": "cheat_config_fastfall"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "slider",
+  "teks": "Speed Fall",
+  "alias": "cheat_config_fastfall_speed"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Slow Fall",
+  "alias": "cheat_config_slowfall"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "ModFly",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Anti Lava",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Anti Respawn",
+  "alias": "cheat_config_antirespawn"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "See Locked Door",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "NoClip and Ghost",
+  "alias": "noclip_and_ghost"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Developer Mode",
+  "alias": "developer_mode"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Touch Mode",
+  "alias": "activer_mode"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Visual Invis V2",
+  "alias": "features_invis_v2"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Night Vision",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Can See Ghost",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "See Inside Chest",
+  "alias": "cheat_basic_seeinside_chest"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "See Fruit",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Fast Take",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "No Name",
+  "alias": "cheat_config_noname"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Anti State",
+  "alias": "cheat_anti_state"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Basic",
+  "tipe": "toggle",
+  "teks": "Skip update items",
+  "alias": "cheat_skip_update_item"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "item_picker",
+  "teks": "Item to add",
+  "alias": "visual_inventory_itemid"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "input_int",
+  "teks": "Amount to add",
+  "alias": "visual_inventory_amount"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "button",
+  "teks": "Add to inventory",
+  "alias": "visual_inventory_add"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "toggle",
+  "teks": "Keep visual clothes",
+  "alias": "clothes_config_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "input_string",
+  "teks": "Name",
+  "alias": "config_name_visual"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "button",
+  "teks": "Set name",
+  "alias": "config_refresh_name"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "toggle",
+  "teks": "Keep visual name",
+  "alias": "name_config_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Visual",
+  "tipe": "toggle",
+  "teks": "Keep visual punch",
+  "alias": "punch_config_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "toggle",
+  "teks": "FindPath",
+  "alias": ""
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "item_picker",
+  "teks": "FindPath",
+  "alias": "findpath_config_item"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "slider",
+  "teks": "Block jump",
+  "alias": "findpath_config_blockjump"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "toggle",
+  "teks": "Teleport on path",
+  "alias": "findpath_config_teleport_path"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "toggle",
+  "teks": "Debug paths",
+  "alias": "findpath_config_debug_paths"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "toggle",
+  "teks": "Debug current location",
+  "alias": "findpath_config_current_loc"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "FindPath",
+  "tipe": "toggle",
+  "teks": "Overclock",
+  "alias": "findpath_config_overclock"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Fast Drop",
+  "alias": "cheat_config_fastdrop_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Custom count",
+  "alias": "cheat_config_fastdrop_custom"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "input_int",
+  "teks": "Count to drop",
+  "alias": "cheat_config_fastdrop_count"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Fast Trash",
+  "alias": "cheat_config_fasttrash_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Custom count",
+  "alias": "cheat_config_fasttrash_custom"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "input_int",
+  "teks": "Count to drop",
+  "alias": "cheat_config_fasttrash_count"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Fast Buy",
+  "alias": "cheat_config_fastbuy_active"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "toggle",
+  "teks": "Custom count",
+  "alias": "cheat_config_fastbuy_custom"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Fast",
+  "tipe": "input_int",
+  "teks": "Amount to buy",
+  "alias": "cheat_config_fastbuy_amount"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "ESP",
+  "tipe": "toggle",
+  "teks": "Player",
+  "alias": "cheat_esp_player"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "ESP",
+  "tipe": "toggle",
+  "teks": "Item",
+  "alias": "cheat_esp_item"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "ESP",
+  "tipe": "toggle",
+  "teks": "Ghost",
+  "alias": "cheat_esp_ghost"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "ESP",
+  "tipe": "toggle",
+  "teks": "Force draw all types",
+  "alias": "cheat_esp_ghost_force"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Info",
+  "tipe": "button",
+  "teks": "Refresh",
+  "alias": "rawinfo_netavatarlocal"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "Enable",
+  "alias": "debug_tile"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "Text Packet",
+  "alias": "debug_text_packet"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_int",
+  "teks": "Filter by type",
+  "alias": "debug_sendpacket_type_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by string",
+  "alias": "debug_sendpacket_str_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Clear logs",
+  "alias": "debug_sendpacket_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Selected log",
+  "alias": "debug_sendpacket_selected"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Copy to clipboard",
+  "alias": "debug_sendpacket_copy"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "Raw Packet",
+  "alias": "debug_raw_packet"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_int",
+  "teks": "Filter by type",
+  "alias": "debug_rawpacket_type_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by string",
+  "alias": "debug_rawpacket_str_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Clear logs",
+  "alias": "debug_rawpacket_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Selected log",
+  "alias": "debug_rawpacket_selected"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Copy to clipboard",
+  "alias": "debug_rawpacket_copy"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "OnVariant",
+  "alias": "debug_on_variant"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by variant name",
+  "alias": "debug_variant_name_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by string",
+  "alias": "debug_variant_str_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Clear logs",
+  "alias": "debug_variant_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Selected log",
+  "alias": "debug_variant_selected"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Copy to clipboard",
+  "alias": "debug_variant_copy"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "GameTankUpdate",
+  "alias": "debug_tankupdate"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_int",
+  "teks": "Filter by type",
+  "alias": "debug_tankupdate_type_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by string",
+  "alias": "debug_tankupdate_str_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Clear logs",
+  "alias": "debug_tankupdate_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Selected log",
+  "alias": "debug_tankupdate_selected"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Copy to clipboard",
+  "alias": "debug_tankupdate_copy"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "toggle",
+  "teks": "Value Debugger",
+  "alias": "debug_value_debugger"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Filter by string",
+  "alias": "debug_value_str_filter"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Clear logs",
+  "alias": "debug_value_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "input_string",
+  "teks": "Selected log",
+  "alias": "debug_value_selected"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Debug",
+  "tipe": "button",
+  "teks": "Copy to clipboard",
+  "alias": "debug_value_copy"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "input_string",
+  "teks": "Login directly with ltoken, if ltoken is manually inputted you must configure the MAC and RID",
+  "alias": "ltoken_spoof"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "toggle",
+  "teks": "Enable ltoken login",
+  "alias": "ltoken_spoof_enable"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "button",
+  "teks": "Clear ltoken",
+  "alias": "ltoken_clear"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "dropdown",
+  "teks": "Platform",
+  "alias": "login_platform"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "input_string",
+  "teks": "MAC Address",
+  "alias": "login_mac"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "button",
+  "teks": "Generate MAC",
+  "alias": "login_generate_mac"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "input_string",
+  "teks": "RID",
+  "alias": "login_rid"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "button",
+  "teks": "Generate RID",
+  "alias": "login_generate_rid"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "input_string",
+  "teks": "WK",
+  "alias": "login_wk"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "button",
+  "teks": "Generate WK",
+  "alias": "login_generate_wk"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Login Spoof",
+  "tipe": "input_string",
+  "teks": "Refresh Token",
+  "alias": "ltoken_refresh_token"
+ },
+ {
+  "kategori": "Menu",
+  "sub": "Google",
+  "tipe": "button",
+  "teks": "Clear Token",
+  "alias": "google_clear_token"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "input_int",
+  "teks": "Delay spam (ms)",
+  "alias": "spammer_config_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Auto delay",
+  "alias": "spammer_config_autodelay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "input_int",
+  "teks": "Delay detected spam (ms)",
+  "alias": "spammer_config_delay_long"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Random Color",
+  "alias": "spammer_config_autocolor"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Random Order",
+  "alias": "spammer_config_shuffle"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Send to Client",
+  "alias": "spammer_config_sendclient"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "input_string",
+  "teks": "Text to spam",
+  "alias": "spammer_config_texttospam"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "button",
+  "teks": "Add to list",
+  "alias": "spammer_config_addtolist"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "button",
+  "teks": "Clear list",
+  "alias": "spammer_config_clearlist"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Auto Re-enter",
+  "alias": "cheat_config_autoenter"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "toggle",
+  "teks": "Auto replay after enter",
+  "alias": "spammer_replay_active"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Spammer",
+  "tipe": "button",
+  "teks": "Get all actions",
+  "alias": "spammer_replay_actions"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "item_picker",
+  "teks": "Block to break",
+  "alias": "autofarm_item_picker"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "tile_select",
+  "teks": "Select tile to break",
+  "alias": "autofarm_target_tile"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Verify before punch",
+  "alias": "autofarm_verify"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Break",
+  "alias": "autofarm_do_break"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Place",
+  "alias": "autofarm_do_place"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "slider",
+  "teks": "Hit Count",
+  "alias": "autofarm_punch_count"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Delay Break",
+  "alias": "autofarm_autopunch_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Delay place",
+  "alias": "autofarm_autoplace_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Autofarm Debug",
+  "alias": "autofarm_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Verify pos before continue",
+  "alias": "autofarm_verify_pos"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Verify pos debug",
+  "alias": "autofarm_verify_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "slider",
+  "teks": "Delay after teleport",
+  "alias": "autofarm_verify_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Faster break",
+  "alias": "autofarm_config_overclock"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Show punch",
+  "alias": "autofarm_config_showpunch"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Auto collect",
+  "alias": "autofarm_autocollect_start"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Delay",
+  "alias": "autofarm_autocollect_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Collect block",
+  "alias": "autofarm_autocollect_block"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Collect seed",
+  "alias": "autofarm_autocollect_seed"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Debug",
+  "alias": "autofarm_autocollect_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Auto drop",
+  "alias": "autofarm_autodrop_start"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Minimum to drop",
+  "alias": "autofarm_autodrop_minimum"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Position x block",
+  "alias": "autofarm_autodrop_x"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_int",
+  "teks": "Position y block",
+  "alias": "autofarm_autodrop_y"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "button",
+  "teks": "Current position",
+  "alias": "autofarm_autodrop_current_pos"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_string",
+  "teks": "World to drop",
+  "alias": "autofarm_autodrop_worldname"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "button",
+  "teks": "Current world",
+  "alias": "autofarm_autodrop_worldname_current"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "toggle",
+  "teks": "Auto pick",
+  "alias": "autofarm_autopick_enable"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "input_string",
+  "teks": "World to pick",
+  "alias": "autofarm_autopick_world"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "button",
+  "teks": "Current world",
+  "alias": "autofarm_autopick_world_current"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Autofarm",
+  "tipe": "dropdown",
+  "teks": "Auto pick mode",
+  "alias": "autofarm_autopick_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "item_picker",
+  "teks": "Item to farm",
+  "alias": "automation_item"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Enable Auto Collect",
+  "alias": "automation_autocollect"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "dropdown",
+  "teks": "Mode",
+  "alias": "automation_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Safe delay",
+  "alias": "automation_safe_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Delay plant (ms)",
+  "alias": "automation_delay_plant"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Delay harvest (ms)",
+  "alias": "automation_delay_harvest"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Anti Miss",
+  "alias": "automation_antimiss"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Start from bottom",
+  "alias": "automation_start_from_bottom"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Enable Auto Drop",
+  "alias": "automation_autodrop"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Minimum to drop",
+  "alias": "automation_autodrop_minimum"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Drop position X",
+  "alias": "automation_autodrop_x"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Drop position Y",
+  "alias": "automation_autodrop_y"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "button",
+  "teks": "Current position",
+  "alias": "automation_autodrop_current_pos"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "dropdown",
+  "teks": "Facing when drop",
+  "alias": "automation_autodrop_facing"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Enable Auto Take",
+  "alias": "automation_autotake"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Minimum to take",
+  "alias": "automation_autotake_minimum"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Enable Auto Splice",
+  "alias": "automation_autosplice"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "item_picker",
+  "teks": "Item to splice",
+  "alias": "automation_splice_item"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "input_int",
+  "teks": "Minimum planted before splice",
+  "alias": "automation_autosplice_minimum_planted"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Automation Debug",
+  "alias": "automation_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Automation",
+  "tipe": "toggle",
+  "teks": "Smart Delay",
+  "alias": "automation_smart_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "item_picker",
+  "teks": "Item",
+  "alias": "collectfilter_itemtotake"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "input_int",
+  "teks": "Specified value",
+  "alias": "filter_collect_valuetake"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "item_picker",
+  "teks": "Item",
+  "alias": "collectfilter_itemdisabletake"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "input_int",
+  "teks": "Delay",
+  "alias": "auto_collect_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "toggle",
+  "teks": "Fast take",
+  "alias": "auto_collect_faster"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "toggle",
+  "teks": "Check before take",
+  "alias": "auto_collect_check"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "toggle",
+  "teks": "Inventory check",
+  "alias": "auto_collect_inventory_check"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "toggle",
+  "teks": "Debug area",
+  "alias": "auto_collect_debug_area"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "toggle",
+  "teks": "Debug take",
+  "alias": "auto_collect_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "dropdown",
+  "teks": "Auto collect mode",
+  "alias": "auto_collect_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "slider",
+  "teks": "Radius auto collect",
+  "alias": "auto_collect_radius"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Collect",
+  "tipe": "tile_select",
+  "teks": "Select tile to collect",
+  "alias": "auto_collect_tile"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "item_picker",
+  "teks": "Bait",
+  "alias": "autofish_config_bait"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "input_int",
+  "teks": "Delay after catch",
+  "alias": "autofish_config_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "dropdown",
+  "teks": "Direction",
+  "alias": "autofish_config_direct"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "input_int",
+  "teks": "Delay after trigger mode",
+  "alias": "autofish_config_delaymode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "input_int",
+  "teks": "Minimum items in front to move",
+  "alias": "autofish_config_minimum_to_move"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "toggle",
+  "teks": "Auto teleport back",
+  "alias": "autofish_autoteleport"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "toggle",
+  "teks": "Auto move",
+  "alias": "autofish_automove"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "dropdown",
+  "teks": "Action after catch",
+  "alias": "autofish_action_catch"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "dropdown",
+  "teks": "Filter Action",
+  "alias": "autofish_action_catch_filter"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Fishing",
+  "tipe": "toggle",
+  "teks": "Enable Action",
+  "alias": "autofish_action_enable"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "AutoCrime",
+  "tipe": "toggle",
+  "teks": "AutoCrime",
+  "alias": "autocrime_is_active"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "dropdown",
+  "teks": "Automation mode",
+  "alias": "copysong_place_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "toggle",
+  "teks": "Debug",
+  "alias": "copysong_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "input_string",
+  "teks": "Filename",
+  "alias": "copysong_filename"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "button",
+  "teks": "Current world",
+  "alias": "copysong_filename_current"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "button",
+  "teks": "Add",
+  "alias": "copysong_filename_add"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "button",
+  "teks": "Refresh",
+  "alias": "copysong_file_refresh"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "button",
+  "teks": "Refresh required",
+  "alias": "copysong_refresh_required"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Copy Song",
+  "tipe": "button",
+  "teks": "Copy world song",
+  "alias": "copysong_start_copy"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Auto Punch Ghost",
+  "alias": "cheat_auto_esp_ghost"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Punch",
+  "alias": "cheat_auto_esp_ghost_show_punch"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Auto put jar",
+  "alias": "cheat_auto_esp_ghost_jar"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "slider",
+  "teks": "Search Radius",
+  "alias": "ghost_config_radius"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "input_int",
+  "teks": "Minimum ghost stay before put jar",
+  "alias": "ghost_config_min_in_radius"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Debug",
+  "alias": "cheat_auto_esp_ghost_debug"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Distance",
+  "alias": "ghost_debug_distance"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Target",
+  "alias": "ghost_debug_target"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Line",
+  "alias": "ghost_debug_line"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Ghost State",
+  "alias": "ghost_debug_state"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Ghost Type",
+  "alias": "ghost_debug_type"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Show Radius Rectangle",
+  "alias": "ghost_debug_circle"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Esp Ghost",
+  "alias": "cheat_esp_ghost"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Auto Teleport",
+  "alias": "cheat_esp_ghost_auto_teleport"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Normal Ghost",
+  "alias": "ghost_auto_normal"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Mind Ghost",
+  "alias": "ghost_auto_mind"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Ghost",
+  "tipe": "toggle",
+  "teks": "Winter Ghost",
+  "alias": "ghost_auto_winter"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "toggle",
+  "teks": "Record",
+  "alias": "replay_record_active"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "toggle",
+  "teks": "Play",
+  "alias": "replay_play_active"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "toggle",
+  "teks": "Loop",
+  "alias": "replay_loop"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "toggle",
+  "teks": "Raw Packet",
+  "alias": "replay_record_active_raw"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "toggle",
+  "teks": "Text Packet",
+  "alias": "replay_record_active_text"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "input_int",
+  "teks": "Custom delay (ms)",
+  "alias": "replay_custom_delay"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "button",
+  "teks": "Clear Actions",
+  "alias": "replay_clear"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "input_string",
+  "teks": "Filename",
+  "alias": "replay_filename"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "button",
+  "teks": "Add",
+  "alias": "replay_filename_add"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "button",
+  "teks": "Refresh",
+  "alias": "replay_action_refresh"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Replay",
+  "tipe": "button",
+  "teks": "Refresh",
+  "alias": "replay_file_refresh"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Wrench",
+  "tipe": "dropdown",
+  "teks": "Fast wrench mode",
+  "alias": "cheat_fastwrench"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Wrench",
+  "tipe": "toggle",
+  "teks": "Enable",
+  "alias": "cheat_fastwrench_enable"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Wrench",
+  "tipe": "toggle",
+  "teks": "Enhanced Mode",
+  "alias": "cheat_fastwrench_enhanced"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Wrench",
+  "tipe": "toggle",
+  "teks": "Auto Wrench",
+  "alias": "cheat_autowrench"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Wrench",
+  "tipe": "dropdown",
+  "teks": "Auto wrench mode",
+  "alias": "cheat_autowrench_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "toggle",
+  "teks": "Enable",
+  "alias": "mod_exit_enable"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "dropdown",
+  "teks": "Autoexit mode",
+  "alias": "modexit_mode"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_string",
+  "teks": "World to drop",
+  "alias": "mod_exit_drop_world"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Current world",
+  "alias": "mod_exit_current_world"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position x block",
+  "alias": "mod_exit_drop_pos_x"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position y block",
+  "alias": "mod_exit_drop_pos_y"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Current position",
+  "alias": "mod_exit_current_drop"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_string",
+  "teks": "World to donate",
+  "alias": "mod_exit_donate_world"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Current world",
+  "alias": "mod_exit_current_world_donate"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position x block",
+  "alias": "mod_exit_donate_player_pos_x"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position y block",
+  "alias": "mod_exit_donate_player_pos_y"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Current position",
+  "alias": "mod_exit_current_donate"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position x block",
+  "alias": "mod_exit_donate_pos_x"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "input_int",
+  "teks": "Position y block",
+  "alias": "mod_exit_donate_pos_y"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Auto find nearest",
+  "alias": "mod_exit_find_donate"
+ },
+ {
+  "kategori": "Automation",
+  "sub": "Moderator Exit",
+  "tipe": "button",
+  "teks": "Trigger",
+  "alias": "DEBUG_MOD_JOIN"
+ },
+ {
+  "kategori": "World",
+  "sub": "Growscan",
+  "tipe": "button",
+  "teks": "Open Growscan",
+  "alias": "cheat_growscan_open"
+ },
+ {
+  "kategori": "World",
+  "sub": "Growscan",
+  "tipe": "button",
+  "teks": "Scan Floating Items",
+  "alias": "cheat_growscan_open_floating"
+ },
+ {
+  "kategori": "World",
+  "sub": "Growscan",
+  "tipe": "button",
+  "teks": "Scan Block",
+  "alias": "cheat_growscan_open_block"
+ },
+ {
+  "kategori": "World",
+  "sub": "Random",
+  "tipe": "slider",
+  "teks": "Length",
+  "alias": "cheat_config_randomworld_length"
+ },
+ {
+  "kategori": "World",
+  "sub": "Random",
+  "tipe": "toggle",
+  "teks": "With Number",
+  "alias": "cheat_config_randomworld_withnumber"
+ },
+ {
+  "kategori": "World",
+  "sub": "Random",
+  "tipe": "button",
+  "teks": "Find",
+  "alias": "cheat_config_randomworld_find"
+ },
+ {
+  "kategori": "Module",
+  "sub": "Lua Manager",
+  "tipe": "button",
+  "teks": "Refresh",
+  "alias": "luamanager_refresh"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "Fast Dice",
+  "alias": "cheat_config_fastdice"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "Fast Wheel",
+  "alias": "cheat_config_fastwheel"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "Anti Gravity",
+  "alias": "Gravity"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "Anti Punch",
+  "alias": "Antipunch"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "Antilag",
+  "alias": "cheat_antilag"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "No Particle",
+  "alias": "config_cheat_noparticle"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "toggle",
+  "teks": "ModZoom",
+  "alias": "cheat_setting_modzoom"
+ },
+ {
+  "kategori": "Setting",
+  "sub": "Misc",
+  "tipe": "button",
+  "teks": "Refresh Items Dat",
+  "alias": "cheat_refresh_items_dat"
+ }
+]
