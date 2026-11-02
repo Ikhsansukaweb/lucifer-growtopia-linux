@@ -554,6 +554,11 @@ class LuaEngine:
 
             def luar(*args, **kw):
                 label = kw.pop("bot", None)
+                if nama == "kirim":
+                    b = self._resolve_bot(label)
+                    if b is None:
+                        raise RuntimeError("belum ada bot")
+                    return b.kirim(*args, **kw)
                 if nama == "features_menu":
                     from .features import TILE_MENU  # noqa: PLC0415
 
@@ -587,6 +592,7 @@ class LuaEngine:
             "replay_files", "replay_status",
             "growscan", "command", "command_status",
             "features_stop_all", "features_status", "features_menu",
+            "kirim",
         )
         for nama in tuple(SEMUA_ALIAS) + tambahan:
             g[nama] = bungkus(nama)

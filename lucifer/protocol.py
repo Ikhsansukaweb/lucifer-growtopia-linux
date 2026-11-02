@@ -434,3 +434,107 @@ def parse_packet(data: bytes) -> tuple[int, bytes]:
         raise ValueError(f"Paket terlalu pendek ({len(data)} byte) untuk header tipe")
     (t,) = struct.unpack_from("<I", data, 0)
     return t, data[4:]
+
+
+# --------------------------------------------------------------------------- #
+# Tabel paket `action|...` hasil ekstraksi dari libgrowtopia.so (arm64)
+# --------------------------------------------------------------------------- #
+# Sumber: literal string di .rodata `libgrowtopia.so` versi 5.58 (43.331.256 B).
+# Setiap entri = satu `action|` yang benar-benar dikirim klien, beserta field
+# yang menyertainya (urutan sesuai literal di binary). Dipakai
+# `Bot.kirim()` supaya aksi baru tidak perlu satu method per fitur.
+#
+# Alat ekstraksi: tools/extract_so.py (tanpa Ghidra).
+ACTIONS: dict[str, tuple[str, ...]] = {
+    "AccountSecurity": ("location",),
+    "PlasmaGlobeHeartLocalHour": ("localHour",),
+    "UbiclubMenu": ("location",),
+    "activatedungeonchallenge": (),
+    "adClosed": (),
+    "auction_getpage": ("pageIndex", "sortType", "searchItem"),
+    "auction_place_bid": ("bidAmount",),
+    "chaching": (),
+    "claimdailyreward": (),
+    "claimdungeonchallengerewards": (),
+    "claimwinterrallyreward": (),
+    "communitytabs": ("type",),
+    "complete_seeddiary_tutorial": (),
+    "dailyrewardmenu": (),
+    "dungeonBackpackClicked": (),
+    "dungeonleaderboard_getrange": ("startIndex", "endIndex", "relative"),
+    "eventmenu": ("location",),
+    "fashion_show_join_to_room": (),
+    "fashion_show_vote": ("participantIndex",),
+    "friends": ("location",),
+    "get_seed_diary_data": (),
+    "giveupdungeonchallenge": (),
+    "gohomeworld": (),
+    "growid": (),
+    "houston_validation_done": (),
+    "inventoryfavuitrigger": (),
+    "itemfavourite": (),
+    "killstore": ("item",),
+    "mailbox_claimreward": ("messageID",),
+    "mailbox_claimrewardsmany": ("listIDs",),
+    "mailbox_getpage": ("pageIndex",),
+    "mailbox_readmessage": ("messageID",),
+    "mod_trade": ("itemID",),
+    "on_use_door_tutorial": (),
+    "purchase_dungeon_pass": (),
+    "purchase_dungeon_scroll": (),
+    "pveprofile": (),
+    "quit": (),
+    "refresh_item_data": (),
+    "refresh_player_tribute_data": (),
+    "rem_trade": ("itemID",),
+    "requestAccountDelete": (),
+    "resetclaimdailyreward": (),
+    "respawn_spike": ("tileX",),
+    "setDeath": ("animDeath",),
+    "setFilter": ("filtering",),
+    "setGDPR": ("GDPR",),
+    "setOnlyFriendsChat": ("show",),
+    "setRespawn": ("animRespawn",),
+    "setRoleIcon": ("roleType",),
+    "setRoleSkin": ("roleType",),
+    "setSkin": ("color",),
+    "set_auction_tile": ("item",),
+    "setchatFilter": ("filtering",),
+    "showdungeoninvitefriends": (),
+    "startdungeonbtn": (),
+    "store": ("location",),
+    "storenavigate": ("item", "selection"),
+    "survey": (),
+    "surveyanswer": (),
+    "trade_accept": ("status",),
+    "trade_cancel": (),
+    "trade_check_price": (),
+    "trade_lock": ("status",),
+    "trade_started": ("netid",),
+    "tutorialTaskPhoneClicked": (),
+    "tutorialTaskQuestClicked": (),
+    "update_weather_machine": ("jsonStr",),
+    "validate_world": ("name",),
+    "wardrobe_preset_load": (),
+    "wardrobe_purchase_slot": (),
+    "wardrobe_unequip_all": (),
+    "world_button": ("name",),
+    "worldlock_storage_getpage": ("pageIndex",),
+    "worldlock_storage_modify_amount": ("amount", "type"),
+}
+
+
+def build_action(name: str, **fields: Any) -> bytes:
+    """Bangun payload `action|<name>\\n<field>|<nilai>\\n...`.
+
+    Urutan field mengikuti tabel `ACTIONS`; nilai diberikan lewat keyword.
+    Field yang tidak diberi nilai dilewati.
+    """
+    spec = ACTIONS.get(name)
+    if spec is None:
+        raise KeyError(f"action tidak dikenal: {name!r}")
+    parts = [f"action|{name}"]
+    for key in spec:
+        if key in fields and fields[key] is not None:
+            parts.append(f"{key}|{fields[key]}")
+    return ("\n".join(parts) + "\n").encode("utf-8")

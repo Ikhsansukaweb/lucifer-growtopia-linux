@@ -635,6 +635,31 @@ def check_token(ltoken: str, timeout: int = 20,
 # Akun
 # --------------------------------------------------------------------------- #
 @dataclass
+class RedirectInfo:
+    """Isi paket `OnSendToServer` — dipakai untuk login ke SUB-SERVER.
+
+    Klien asli tidak mengirim `ltoken` lagi setelah redirect. Ia mengirim
+    paket login penuh yang membawa `user|`, `token|`, `UUIDToken|`, `lmode|`
+    (nilai dari argumen `OnSendToServer`) plus identitas klien. Terbukti dari
+    string di `libgrowtopia.so`: `UUIDToken|`, `tankIDName|`, `token|`,
+    `lmode|`, `user|` berada di blok login, sedangkan `ltoken|` hanya dipakai
+    pada login pertama (login server).
+    """
+
+    server: str = ""
+    port: int = 0
+    token: str = ""
+    user: str = ""
+    door_id: str = ""
+    uuid_token: str = ""
+    lmode: str = "1"
+    tank_id_name: str = ""
+    meta: str = ""
+    rid: str = ""
+    mac: str = ""
+
+
+@dataclass
 class Account:
     """Kredensial + preferensi satu akun Growtopia.
 
@@ -780,6 +805,64 @@ class Account:
                 "adc|1\n"
             )
         return body.encode("utf-8")
+
+    def redirect_payload(self, redirect: "RedirectInfo") -> bytes:
+        """Payload GenericText untuk ServerHello di SUB-SERVER (setelah redirect).
+
+        PENTING (dibandingkan dengan implementasi bot lain yang berhasil, dan
+        dibuktikan dari paket `OnSendToServer` yang server kirim):
+
+        Sub-server TIDAK menerima `ltoken` biasa. Klien asli mengirim paket
+        login *redirect* yang membawa `user|`, `token|`, `UUIDToken|`, `lmode|`
+        (nilai-nilai dari argumen `OnSendToServer`) plus identitas klien.
+        Dulu kita hanya mengirim ulang `login_payload()` — server membalas
+        `OnSetNpcXMLIndexes` lalu diam, dunia tidak pernah dimuat.
+        """
+        from .hash import generate_klv, hash_gt, random_hex, random_mac  # noqa: PLC0415
+
+        mac = redirect.mac or self.mac or random_mac()
+        rid = redirect.rid or self.rid or random_hex(32, uppercase=True)
+        hash_val = hash_gt(f"{mac}RT".encode())
+        wk = random_hex(32, uppercase=True)
+        hash2_val = hash_gt(f"{wk}RT".encode())
+        klv = generate_klv(str(self.version), str(hash_val), rid, str(self.protocol))
+        fields = [
+            ("tankIDName", redirect.tank_id_name or self.username),
+            ("tankIDPass", ""),
+            ("requestedName", ""),
+            ("f", "1"),
+            ("protocol", str(self.protocol)),
+            ("game_version", str(self.version)),
+            ("fz", "21905432"),
+            ("cbits", "0"),
+            ("hash2", str(hash2_val)),
+            ("meta", redirect.meta or ""),
+            ("rid", rid),
+            ("platformID", PLATFORM_ID_MOBILE),
+            ("deviceVersion", DEVICE_VERSION_MOBILE),
+            ("country", "us"),
+            ("hash", str(hash_val)),
+            ("mac", mac),
+            ("user", str(redirect.user)),
+            ("token", str(redirect.token)),
+            ("wk", wk),
+            ("fhash", "-716928004"),
+            ("GDPR", "2"),
+            ("player_age", "20"),
+            ("category", "_-5100"),
+            ("totalPlaytime", "0"),
+            ("klv", klv),
+            ("lmode", str(redirect.lmode)),
+        ]
+        if redirect.door_id and redirect.door_id not in ("", "-1", "0"):
+            fields.append(("doorID", str(redirect.door_id)))
+        # `UUIDToken|` + `aat|` + `reconnect|1` = penanda klien "sudah pernah
+        # login" yang dipakai klien asli pada builder redirect (-1 = tak ada).
+        if redirect.uuid_token and redirect.uuid_token not in ("", "-1"):
+            fields.append(("UUIDToken", str(redirect.uuid_token)))
+        fields.append(("aat", "2"))
+        fields.append(("reconnect", "1"))
+        return ("\n".join(f"{k}|{v}" for k, v in fields) + "\n").encode("utf-8")
 
 
 def load_accounts(path: str | Path) -> list[Account]:

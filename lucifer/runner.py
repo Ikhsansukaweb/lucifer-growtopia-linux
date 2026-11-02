@@ -168,8 +168,66 @@ class Runner:
                 self._log(f"[{bot.label}] terhubung ({bot.server[0]}:{bot.server[1]})")
             else:
                 self._log(f"[{bot.label}] gagal connect (status={bot.status})")
+                self._selamatkan_token(bot)
         except Exception as e:  # noqa: BLE001
             self._log(f"[{bot.label}] error connect: {type(e).__name__}: {e}")
+
+    def _selamatkan_token(self, bot: Bot) -> None:
+        """Bedakan `token mati` dari `cooldown` setelah login ditolak.
+
+        Pesan server `Fail to login. Please try again in 30 seconds.` adalah
+        balasan GENERIK untuk kredensial yang ditolak — pesan yang sama muncul
+        untuk kredensial palsu (lihat tests/test_integration.py). Jadi pesan itu
+        TIDAK bisa dipakai membedakan token mati dari cooldown IP.
+
+        Satu-satunya cara membedakan: tanya /player/growid/checktoken.
+          * "Token is invalid."          -> token MATI, harus ambil ltoken baru
+          * "Account Validated." + token -> token hidup (dan server merotasi)
+        Karena checktoken MEROTASI token, hasilnya langsung disimpan supaya
+        token lama yang sudah tidak berlaku tidak dipakai connect berikutnya.
+        """
+        if bot.status not in (BotStatus.logon_fail, BotStatus.too_many_login,
+                              BotStatus.invalid_account):
+            return
+        token = getattr(bot.account, "_token", "") or bot.account.ltoken
+        if not token:
+            return
+
+        from .account import check_token  # noqa: PLC0415
+
+        try:
+            res = check_token(token, timeout=15)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"[{bot.label}] tidak bisa cek token: {type(e).__name__}")
+            return
+
+        if not res.ok:
+            bot.status = BotStatus.invalid_account
+            self._log(
+                f"[{bot.label}] TOKEN MATI — server bilang '{res.message}'. "
+                "Ambil ltoken baru (panel Login: tab HP/Android, atau login "
+                "Google di klien resmi). Bukan masalah cooldown."
+            )
+            return
+
+        baru = res.token or token
+        if baru != token:
+            bot.account._token = baru
+            bot.account.ltoken = baru
+            try:
+                upsert_account(self.accounts_path, bot.account)
+            except Exception as e:  # noqa: BLE001
+                self._log(f"[{bot.label}] gagal simpan token baru: {e}")
+            self._log(
+                f"[{bot.label}] token disegarkan server ({len(baru)} char); "
+                "token lama sudah tidak berlaku. Connect sekali lagi."
+            )
+            return
+
+        self._log(
+            f"[{bot.label}] token masih HIDUP — server hanya menahan login "
+            f"(cooldown IP). Jangan connect berulang; tunggu sesuai pesan."
+        )
 
     # ------------------------------------------------------------------ #
     # Akun (dipakai dashboard: login/hapus/connect dari UI)
@@ -241,13 +299,20 @@ class Runner:
                              f"{type(e).__name__}: {e}",
                 }
 
-        # Validasi ltoken dulu kalau ada — supaya tidak menyimpan token mati
+        # Validasi + SEGARKAN ltoken. checktoken mengembalikan token BARU
+        # (berbeda dari yang dikirim), dan hanya token hasil penyegaran itu
+        # yang dianggap server masih hidup. Menyimpan token lama lalu
+        # memakainya untuk connect menghasilkan penolakan kredensial.
         pesan_validasi = ""
         if ltoken:
             try:
                 res = check_token(ltoken, timeout=15)
                 if res.ok:
-                    pesan_validasi = "ltoken valid"
+                    if res.token and res.token != ltoken:
+                        ltoken = res.token
+                        pesan_validasi = "ltoken disegarkan (token baru dari server)"
+                    else:
+                        pesan_validasi = "ltoken valid"
                 else:
                     pesan_validasi = f"peringatan: server bilang '{res.message}'"
             except Exception as e:  # noqa: BLE001

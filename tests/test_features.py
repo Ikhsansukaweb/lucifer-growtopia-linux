@@ -192,6 +192,59 @@ print("== stop_semua aman saat idle ==")
 b.fitur.stop_semua()
 cek("stop_semua tidak melempar", True)
 
+# --------------------------------------------------------------------------- #
+# Tabel ACTION hasil ekstraksi libgrowtopia.so
+# --------------------------------------------------------------------------- #
+def uji_tabel_action() -> None:
+    from lucifer import protocol as P
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+
+    print("== tabel ACTION (ekstraksi libgrowtopia.so) ==")
+    cek("ACTIONS berisi 75 aksi", len(P.ACTIONS), 75)
+    cek("gohomeworld ada", "gohomeworld" in P.ACTIONS, True)
+    cek("field store", P.ACTIONS["store"], ("location",))
+    cek("field trade_lock", P.ACTIONS["trade_lock"], ("status",))
+    cek(
+        "field worldlock_storage_modify_amount",
+        P.ACTIONS["worldlock_storage_modify_amount"],
+        ("amount", "type"),
+    )
+
+    cek("build_action tanpa field", P.build_action("gohomeworld"),
+        b"action|gohomeworld\n")
+    cek(
+        "build_action urut sesuai tabel",
+        P.build_action("storenavigate", item="locks", selection="upgrade_backpack"),
+        b"action|storenavigate\nitem|locks\nselection|upgrade_backpack\n",
+    )
+
+    acc = Account(username="t", method="token", ltoken="X" * 10)
+    b = Bot(acc, label="t")
+    keluar: list[bytes] = []
+    b.send_text = lambda mt, body: keluar.append(body) or True
+
+    b.kirim("trade_lock", status=1)
+    cek("kirim keyword", keluar[-1], b"action|trade_lock\nstatus|1\n")
+
+    b.kirim("storenavigate", "item", "locks", "selection", "upgrade_backpack")
+    cek("kirim gaya pasangan (Lua)", keluar[-1],
+        b"action|storenavigate\nitem|locks\nselection|upgrade_backpack\n")
+
+    b.kirim("worldlock_storage_modify_amount", 5, 2)
+    cek("kirim posisional (Lua)", keluar[-1],
+        b"action|worldlock_storage_modify_amount\namount|5\ntype|2\n")
+
+    try:
+        b.kirim("aksi_palsu")
+        cek("aksi tak dikenal ditolak", "tidak error", "KeyError")
+    except KeyError:
+        cek("aksi tak dikenal ditolak", "KeyError", "KeyError")
+
+
+uji_tabel_action()
+
+
 print("\n" + "=" * 62)
 print(f" lulus: {LULUS}   gagal: {GAGAL}")
 print("=" * 62)

@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import protocol as P
-from .account import (Account, detik_tunggu, fetch_server_data,
-                      pesan_penolakan_login, sedang_maintenance)
+from .account import (Account, RedirectInfo, detik_tunggu,
+                      fetch_server_data, pesan_penolakan_login,
+                      sedang_maintenance)
 from .enet import ENetHost
 from .items import ItemDatabase
 from .protocol import NetGamePacket as G, NetMessage as M, Tank
@@ -322,6 +323,9 @@ class Bot:
         self._last_server_msg = ""
         self._connected_at = 0.0
         self._action_log: collections.deque[str] = collections.deque(maxlen=200)
+        # Data redirect terakhir (dari OnSendToServer). Selama ada, ServerHello
+        # berikutnya dibalas dengan paket login SUB-SERVER, bukan ltoken.
+        self.redirect_info = None
         # Fitur otomasi (autofarm/autocollect/spammer/path/autodrop).
         # Import di dalam fungsi supaya tidak ada impor melingkar:
         # features.py mengimpor Bot dari modul ini.
@@ -475,6 +479,10 @@ class Bot:
                 pass
         self._running = False
         self.status = BotStatus.offline
+        # Data redirect hanya berlaku untuk satu sesi hospitalitas sub-server.
+        # Menyimpannya melewati disconnect membuat connect berikutnya memakai
+        # paket redirect basi (token mati) -> server diam.
+        self.redirect_info = None
         if self._thread and self._thread.is_alive() and self._thread is not threading.current_thread():
             self._thread.join(timeout=3)
         self._thread = None
@@ -563,7 +571,12 @@ class Bot:
         mtype, payload = P.parse_packet(raw)
 
         if mtype == M.ServerHello:
-            self.send_text(M.GenericText, self.account.login_payload())
+            # Sub-server (setelah OnSendToServer) tidak menerima `ltoken`.
+            # Klien asli membalas ServerHello dengan paket login redirect.
+            if self.redirect_info is not None:
+                self.send_text(M.GenericText, self.account.redirect_payload(self.redirect_info))
+            else:
+                self.send_text(M.GenericText, self.account.login_payload())
             return
 
         if mtype in (M.GenericText, M.GameMessage):
@@ -707,20 +720,56 @@ class Bot:
         self._emit("captcha", url)
 
     def _on_send_to_server(self, vl: P.VariantList) -> None:
-        """Server meminta pindah ke sub-server (redirect)."""
+        """Server meminta pindah ke sub-server (redirect).
+
+        Argumen `OnSendToServer` (dibuktikan dari `libgrowtopia.so`, fungsi
+        pembangun paket redirect di 0x180218c / 0x1805490):
+
+            [1] port (int)
+            [2] token (int, -1 = pakai token sebelumnya)
+            [3] user id (int)
+            [4] "server|doorID|UUIDToken"
+            [5] lmode (int)
+            [6] tankIDName (string)
+
+        Setelah ini ServerHello sub-server WAJIB dibalas paket login redirect
+        (`user|`, `token|`, `UUIDToken|`, `lmode|`), bukan `ltoken` biasa.
+        """
         try:
             port = vl.get(1).as_int32()
-            token = vl.get(2).as_string()
-            uid = vl.get(3).as_string()
-            sd = vl.get(4).as_string().split("|")
-            self.account._token = token
-            host = sd[0]
+            token_i = vl.get(2).as_int32()
+            uid = vl.get(3).as_int32()
+            sd = (vl.get(4).as_string() if vl.get(4) else "").split("|")
+            lmode = vl.get(5).as_int32() if vl.get(5) else 1
+            tank_name = vl.get(6).as_string() if vl.get(6) else ""
+
+            host = (sd[0] if sd else "").strip()
+            door_id = sd[1].strip() if len(sd) > 1 else "0"
+            uuid_raw = sd[2].strip() if len(sd) > 2 else ""
+
+            prev = self.redirect_info
+            token = str(token_i) if token_i >= 0 else (prev.token if prev else "")
+            uuid_token = uuid_raw
+            if (not uuid_token or uuid_token == "-1") and prev:
+                uuid_token = prev.uuid_token
+            if not tank_name and prev:
+                tank_name = prev.tank_id_name
+
+            self.redirect_info = RedirectInfo(
+                server=host, port=port, token=token, user=str(uid),
+                door_id=door_id or "0", uuid_token=uuid_token,
+                lmode=str(lmode), tank_id_name=tank_name,
+                meta=self.meta, rid=self.account.rid, mac=self.account.mac,
+            )
             self.redirected = True
-            self._emit("redirect", {"host": host, "port": port, "user": uid})
-            # pindah server: tutup lalu connect ulang ke alamat baru
-            threading.Thread(
-                target=self._redirect_to, args=(host, port, token), daemon=True
-            ).start()
+            self._emit("redirect", {"host": host, "port": port, "user": str(uid)})
+            # PENTING: jalankan di thread loop ini (bukan thread baru).
+            # Dulu redirect jalan di thread terpisah sementara _loop masih
+            # memanggil service() pada host lama. Dua thread men-service host
+            # yang sama bikin ServerHello dari sub-server bisa "dicuri" atau
+            # hilang -> login sub-server tidak pernah selesai dan dunia tidak
+            # pernah dimuat. Sekarang urutannya deterministik.
+            self._redirect_to(host, port, token)
         except Exception as e:  # noqa: BLE001
             log.warning("redirect gagal: %s", e)
 
@@ -900,6 +949,46 @@ class Bot:
 
     def respawn(self) -> bool:
         return self.send_text(M.GenericText, b"action|respawn\n")
+
+    def kirim(self, action: str, *args: Any, **fields: Any) -> bool:
+        """Kirim `action|...` dari tabel `protocol.ACTIONS`.
+
+        75 aksi Growtopia (gohomeworld, store, wardrobe_*, trade_*, mailbox_*,
+        dll) sudah dipetakan lengkap dengan field-nya di `P.ACTIONS`, hasil
+        ekstraksi literal `libgrowtopia.so`. Jadi tidak perlu satu method per
+        fitur — cukup `bot.kirim("gohomeworld")`.
+
+            bot.kirim("storenavigate", item="locks", selection="upgrade_backpack")
+            bot.kirim("worldlock_storage_modify_amount", amount=5, type=2)
+
+        Nilai juga boleh diberikan posisional (urutan = urutan field di
+        `ACTIONS`), supaya enak dipanggil dari Lua:
+            kirim("storenavigate", "locks", "upgrade_backpack")
+        """
+        spec = P.ACTIONS.get(action)
+        if spec is None:
+            raise KeyError(f"action tidak dikenal: {action!r}")
+        # Dua gaya pemanggilan dari Lua:
+        #   kirim("store", "location", "pausemenu")   -> pasangan kunci/nilai
+        #   kirim("trade_lock", 1)                    -> posisional
+        if args and isinstance(args[0], str) and args[0] in spec:
+            if len(args) % 2:
+                raise TypeError(
+                    f"'{action}': pemanggilan gaya pasangan harus genap "
+                    f"(kunci, nilai); diberi {len(args)} argumen"
+                )
+            for key, val in zip(args[0::2], args[1::2]):
+                fields.setdefault(key, val)
+        else:
+            if len(args) > len(spec):
+                raise TypeError(
+                    f"'{action}' hanya punya {len(spec)} field ({', '.join(spec)}), "
+                    f"diberi {len(args)}"
+                )
+            for key, val in zip(spec, args):
+                fields.setdefault(key, val)
+        self._emit("action", (action, fields))
+        return self.send_text(M.GenericText, P.build_action(action, **fields))
 
     def enter(self, password: str = "") -> bool:
         if password:
