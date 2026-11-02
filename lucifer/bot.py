@@ -101,6 +101,8 @@ _STATUS_MAP: list[tuple[tuple[str, ...], str]] = [
     (("guest",), BotStatus.guest_limit),
     (("name", "length"), BotStatus.bad_name_length),
     (("captcha", "human"), BotStatus.captcha_requested),
+    (("login token is invalid", "token is invalid", "invalid login token",
+      "login token expired", "token expired"), BotStatus.invalid_account),
     (("fail to login", "logon fail"), BotStatus.logon_fail),
 ]
 
@@ -317,6 +319,7 @@ class Bot:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._last_ping_ts = 0.0
+        self._last_server_msg = ""
         self._connected_at = 0.0
         self._action_log: collections.deque[str] = collections.deque(maxlen=200)
         # Fitur otomasi (autofarm/autocollect/spammer/path/autodrop).
@@ -585,6 +588,7 @@ class Bot:
             # Kode warna dibuang supaya log/console enak dibaca.
             msg = P.remove_color(fields.get("msg", ""))
             self.console.append(msg)
+            self._last_server_msg = msg
             for keys, status in _STATUS_MAP:
                 if any(k in msg.lower() for k in keys):
                     self.status = status
@@ -600,9 +604,19 @@ class Bot:
                 self._emit("login_failed", _PesanServer(msg))
 
         if action == "logon_fail":
-            self.status = BotStatus.logon_fail
-            fields.setdefault("msg", "server menolak login (logon_fail)")
+            # Jangan timpa status yang LEBIH SPESIFIK. Server mengirim
+            # `action|logon_fail` bersama `msg|Fail to login. Please try again
+            # in 30 seconds.` — pesan itu sudah dipetakan _STATUS_MAP ke
+            # too_many_login. Menimpanya dengan logon_fail membuat user diberi
+            # saran "sandi salah" padahal yang terjadi cuma cooldown IP.
+            if self.status in (BotStatus.connecting, BotStatus.offline, ""):
+                self.status = BotStatus.logon_fail
+            fields.setdefault("msg", self._last_server_msg or "server menolak login (logon_fail)")
             self._emit("logon_fail", fields)
+            # Cooldown dari server: hentikan auto-reconnect. Menembak ulang
+            # hanya memperpanjang blokir (lihat catatan ANTI-ERCON di connect()).
+            if self.status == BotStatus.too_many_login:
+                self.auto_reconnect = False
 
         if "OnSuperMainStartAcceptLogon" in payload.decode("utf-8", "replace"):
             self.send_text(M.GenericText, b"action|enter_game\n")

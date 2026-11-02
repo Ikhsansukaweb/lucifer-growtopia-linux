@@ -50,6 +50,29 @@ SEMUA UJI NYATA LULUS — rantai Lua -> ENet -> Growtopia bekerja
 Balasan *"Fail to login"* justru **bukti** bahwa paket kita diterima dan dijawab
 server asli — kredensial di tes sengaja tidak valid.
 
+### Kalau kena `logon_fail` (login pakai kuota / hotspot HP)
+
+`Fail to login. Please try again in 30 seconds.` = **cooldown IP dari server**,
+bukan token mati. Token bisa tetap valid (`Account Validated` di
+`/player/growid/checktoken`) sementara game server masih menahan login.
+
+Yang **jangan** dilakukan: klik Connect berulang. Tiap percobaan memperpanjang
+cooldown, lalu IP diblokir lebih lama.
+
+Sejak commit ini bot:
+- memetakan pesan itu ke status `too_many_login` (bukan `logon_fail` generik),
+- **mematikan auto-reconnect** saat cooldown terdeteksi,
+- menyarankan *"tunggu sesuai detik di pesan"*, bukan *"sandi salah"*
+  (login ltoken tidak memakai sandi),
+- memisahkan `Login token is invalid.` → status `invalid_account` dengan saran
+  ambil ltoken baru.
+
+Kalau ENet connect sendiri gagal (`timeout` UDP ke `213.179.209.175:170xx`)
+sementara UDP ke `8.8.8.8:53`/STUN jalan, itu **jalur jaringan memblokir port
+game** — bukan bug bot. Buktinya: TCP/443 ke IP game juga timeout, tapi
+`login.growtopiagame.com:443` terbuka. Ganti jaringan (Wi-Fi lain) atau pakai
+VPN/proxy lewat field `proxy` akun.
+
 `items.dat` v24 terbaca sempurna: **15.934 item**, dengan ID asli
 (World Lock = 242, Dirt = 2, Grass Seed = 17, Wrench = 32).
 

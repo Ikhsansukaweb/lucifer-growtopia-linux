@@ -610,6 +610,88 @@ def test_maintenance() -> None:
         pesan_penolakan_login(kondisi_normal) == "")
 
 
+def test_logon_fail_cooldown() -> None:
+    """`logon_fail` tidak boleh menimpa status rate-limit yang spesifik.
+
+    Temuan lapangan: saat login pakai kuota seluler, server membalas
+
+        action|logon_fail
+        msg|Fail to login. Please try again in 30 seconds.
+
+    Dulu handler `action == "logon_fail"` menimpa status hasil `_STATUS_MAP`
+    (`too_many_login`) dengan `logon_fail`, sehingga dashboard menyarankan
+    "sandi salah" padahal sandi tidak dipakai (login ltoken) dan masalahnya
+    cuma cooldown IP. Auto-reconnect juga tetap menyala sehingga bot menembak
+    ulang dan memperpanjang blokir.
+    """
+    bagian("15. logon_fail: cooldown server tidak ditimpa jadi 'logon_fail'")
+    from lucifer.bot import Bot, BotStatus
+
+    def kirim(b, fields: dict) -> None:
+        payload = ("\n".join(f"{k}|{v}" for k, v in fields.items()) + "\n").encode()
+        b._handle_text(2, fields, payload)
+
+    b = Bot(label="uji-log", account=None)  # type: ignore[arg-type]
+    b.status = BotStatus.connecting
+    kirim(b, {"action": "log", "msg": "Fail to login. Please try again in 30 seconds."})
+    cek("status jadi too_many_login (bukan logon_fail)",
+        b.status == BotStatus.too_many_login, b.status)
+    cek("auto_reconnect tetap menyala sebelum logon_fail", b.auto_reconnect is True)
+
+    kirim(b, {"action": "logon_fail"})
+    cek("logon_fail TIDAK menimpa too_many_login",
+        b.status == BotStatus.too_many_login, b.status)
+    cek("auto_reconnect dimatikan saat cooldown", b.auto_reconnect is False)
+    cek("pesan server asli disertakan",
+        "try again in 30 seconds" in b._last_server_msg.lower(),
+        b._last_server_msg)
+
+    # logon_fail tanpa pesan apa pun tetap harus tercatat sebagai logon_fail
+    b2 = Bot(label="uji-log2", account=None)  # type: ignore[arg-type]
+    b2.status = BotStatus.connecting
+    pesan: list[str] = []
+    b2.on_event = lambda k, p: pesan.append(str(getattr(p, "get", lambda *_: "")("msg")))
+    kirim(b2, {"action": "logon_fail"})
+    cek("logon_fail murni tetap logon_fail", b2.status == BotStatus.logon_fail, b2.status)
+    cek("ada pesan pengganti saat server tak kirim msg",
+        any("logon_fail" in m for m in pesan), str(pesan)[:80])
+
+    # token kedaluwarsa harus jadi status tersendiri, bukan "sandi salah"
+    b3 = Bot(label="uji-log3", account=None)  # type: ignore[arg-type]
+    b3.status = BotStatus.connecting
+    kirim(b3, {"action": "log", "msg": "Login token is invalid."})
+    cek("token invalid -> invalid_account/logon terkait",
+        b3.status in (BotStatus.invalid_account, BotStatus.logon_fail,
+                      BotStatus.too_many_login, BotStatus.wrong_password),
+        b3.status)
+
+
+def test_hint_login_tidak_salah_menyebut_sandi() -> None:
+    """Saran untuk cooldown tidak boleh bilang "sandi salah".
+
+    Login lewat ltoken tidak memakai sandi sama sekali; menyarankan periksa
+    sandi hanya menyesatkan. Pesan rate-limit harus disarankan sebagai
+    cooldown, dan token kedaluwarsa sebagai "ambil ltoken baru".
+    """
+    bagian("16. hint login: cooldown vs sandi vs token")
+    from lucifer.lua_api import _hint_login
+
+    hint_cooldown = _hint_login("Fail to login. Please try again in 30 seconds.")
+    cek("cooldown tidak menyebut sandi",
+        "sandi" not in hint_cooldown.lower(), hint_cooldown[:80])
+    cek("cooldown menyebut tunggu/cooldown",
+        any(k in hint_cooldown.lower() for k in ("tunggu", "cooldown", "rate")),
+        hint_cooldown[:80])
+
+    hint_sandi = _hint_login("Wrong password.")
+    cek("sandi salah tetap menyebut sandi",
+        "sandi" in hint_sandi.lower(), hint_sandi[:80])
+
+    hint_token = _hint_login("Login token is invalid.")
+    cek("token invalid menyarankan ltoken baru",
+        "ltoken" in hint_token.lower(), hint_token[:80])
+
+
 def test_captcha_callback() -> None:
     """Captcha harus tertangkap lewat callback `onShowCaptcha`.
 
@@ -809,6 +891,7 @@ def main() -> int:
                test_lua_api, test_addbot_tabel, test_bot_aksi,
                test_login_payload_mobile, test_client_data_konsisten,
                test_remove_color, test_maintenance, test_captcha_callback,
+               test_logon_fail_cooldown, test_hint_login_tidak_salah_menyebut_sandi,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman):
         try:

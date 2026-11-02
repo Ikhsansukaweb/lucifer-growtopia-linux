@@ -74,16 +74,20 @@ def remove_color(text: str) -> str:
 # Penjelasan penyebab kegagalan login, dipakai agar pesan di dashboard
 # langsung memberi tahu apa yang harus dilakukan pengguna.
 _HINT_LOGIN = (
-    # "Please try login again" / "try again in 30 seconds" -> sandi atau spam
-    (("try login again", "try again", "30 second", "too many", "rate limit"),
-     "sandi salah, atau percobaan terlalu sering — tunggu 30 detik lalu coba lagi"),
+    (("wrong password", "incorrect password", "invalid password", "password is incorrect"),
+     "sandi salah — periksa nama GrowID dan sandi"),
+    # "Please try again in 30 seconds" / "too many request_token commands"
+    (("try login again", "try again", "too many", "rate limit"),
+     "server membatasi login (rate-limit/cooldown) — tunggu sesuai detik di pesan, "
+     "jangan connect berulang karena cooldown makin panjang"),
     (("captcha", "are you human"), "server minta verifikasi — buka Growtopia resmi sekali untuk menyelesaikannya"),
     (("verify", "verification", "not verified"), "akun belum diverifikasi — cek email di growtopiagame.com"),
     (("suspend", "banned", "is ban"), "akun terkena sanksi dari Growtopia"),
     (("banned device", "device id"), "perangkat/IP diblokir sementara"),
     (("server is full", "server full", "overload", "busy", "try later"), "server Growtopia penuh — coba lagi sebentar"),
     (("name", "length"), "nama akun tidak valid (terlalu pendek/panjang)"),
-    (("expired", "invalid token", "token invalid", "token mismatch"),
+    (("expired", "invalid token", "token invalid", "token mismatch",
+      "token is invalid", "login token"), 
      "ltoken tidak valid/kedaluwarsa — ambil ltoken baru lewat panel Login"),
     (("guest",), "batas akun tamu — daftarkan akun GrowID"),
     (("connection", "timeout", "timed out"), "koneksi ke server Growtopia bermasalah — cek internet"),
