@@ -643,6 +643,8 @@ class LuaEngine:
         if kind == "variant":
             self._dispatch("variant", payload)
             self._dispatch("update_packet", payload[1])
+        elif kind == "game_packet":
+            self._dispatch("game_packet", payload)
         elif kind in ("game_message", "generic_text"):
             self._dispatch("game_message", payload)
             self._dispatch("generic_text", payload)
@@ -1727,7 +1729,30 @@ class LuaEngine:
         elif kind == "error":
             self.log_line(f"[error] {payload}")
 
+        # Hook keluar (`onsendpacket`/`onsendpacketraw`) harus sinkron: nilainya
+        # menentukan paket dikirim atau dibatalkan, jadi tidak boleh lewat antrean.
+        if kind in ("send_packet", "send_raw"):
+            return self._dispatch_sync(kind, payload)
+
         self._queue.put((kind, payload))
+        return None
+
+    def _dispatch_sync(self, kind: str, payload: Any) -> bool:
+        """Jalankan handler Lua langsung di thread pemanggil; True = batal."""
+        daftar = list(self.events.get(kind, []))
+        if not daftar:
+            return False
+        hasil = False
+        with self._lua_lock:
+            for fn in daftar:
+                try:
+                    if self._call_event(fn, kind, payload) is True:
+                        hasil = True
+                except LuaStop:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    self.log_line(f"[hook:{kind}] error: {type(e).__name__}: {e}")
+        return hasil
 
     def _dispatch(self, kind: str, payload: Any) -> None:
         """Jalankan fungsi Lua yang terdaftar untuk event ini."""
@@ -1749,8 +1774,18 @@ class LuaEngine:
             fn(self._variantlist_to_lua(vl), int(netid))
         elif kind in ("game_message", "generic_text"):
             fn(self._text_to_lua(payload))
-        elif kind == "update_packet":
+        elif kind in ("update_packet", "game_packet"):
             fn(self._game_packet_from_tank(payload))
+        elif kind == "value":
+            tipe, nama, val = payload
+            fn(int(tipe), str(nama), val)
+        elif kind == "send_packet":
+            teks, mtype = payload
+            return fn(teks, int(mtype))
+        elif kind == "send_raw":
+            return fn(self._game_packet_from_tank(payload))
+        elif kind == "dialog":
+            fn(str(payload))
         elif kind == "world_loaded":
             fn(self._world_table(self.parent))
         elif kind == "tile_update":
@@ -1771,6 +1806,12 @@ class LuaEngine:
         t = self.lua.table()
         t._n = len(vl)
         t._raw = vl
+
+        # deltaX membaca variant lewat field `v1`, `v2`, ... (`var.v2:find(...)`)
+        # dan MENULIS balik ke situ sebelum `sendVariant(var, packet)`. Tanpa
+        # field ini semua handler `onvariant` di skrip deltaX mati diam-diam.
+        for _i, _v in enumerate(vl.variants, start=1):
+            t[f"v{_i}"] = _v.value
 
         def get(self_tbl, index):
             v = vl.get(int(index))
@@ -1836,6 +1877,11 @@ class LuaEngine:
         t.particle_rotation = tank.particle_rotation
         t.int_x = tank.int_x
         t.int_y = tank.int_y
+        # deltaX: `x`/`y` = koordinat PIKSEl, `px`/`py` = koordinat TILE.
+        t.x = tank.vector_x
+        t.y = tank.vector_y
+        t.px = tank.int_x
+        t.py = tank.int_y
         return t
 
     def _listen_events(self, seconds=0) -> None:

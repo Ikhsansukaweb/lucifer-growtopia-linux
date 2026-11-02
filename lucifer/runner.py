@@ -244,6 +244,7 @@ class Runner:
         ltoken: str = "",
         method: str = "",
         connect: bool = False,
+        proxy: str = "",
     ) -> dict[str, Any]:
         """Tambah akun dari dashboard: simpan ke accounts.json + buat bot.
 
@@ -318,6 +319,17 @@ class Runner:
             except Exception as e:  # noqa: BLE001
                 pesan_validasi = f"peringatan: tidak bisa cek token ({type(e).__name__})"
 
+        # Proxy SOCKS5 opsional; format dinormalkan sekali di sini supaya
+        # bot tinggal memakai hasil parse-nya.
+        proxy_bersih = ""
+        if proxy:
+            from .proxy import parse as _parse_proxy  # noqa: PLC0415
+            try:
+                _p = _parse_proxy(proxy)
+                proxy_bersih = _p.url() if _p else ""
+            except ValueError as e:
+                return {"ok": False, "error": f"proxy tidak valid: {e}"}
+
         acc = Account(
             label=label,
             username=username or label,
@@ -326,6 +338,7 @@ class Runner:
             password="" if ltoken else password,
             ltoken=ltoken,
             method=method,
+            proxy=proxy_bersih or None,
         )
         path, baru = upsert_account(self.accounts_path, acc)
         self._log(f"[akun] {'ditambah' if baru else 'diperbarui'}: {label} ({method})")
@@ -336,7 +349,9 @@ class Runner:
         dibuat = False
         if self.engine is not None:
             if label in self.engine.bots:
-                self.engine.bots[label].account = acc
+                bot_lama = self.engine.bots[label]
+                bot_lama.account = acc
+                bot_lama.proxy = acc.proxy
             else:
                 self.engine._new_bot(acc, label)
                 dibuat = True
@@ -356,6 +371,33 @@ class Runner:
         if connect:
             hasil["connect"] = self.connect_bot(label)
         return hasil
+
+    def atur_proxy(self, label: str, proxy: str) -> dict[str, Any]:
+        """Set/ganti/hapus proxy SOCKS5 satu akun. `proxy` kosong = hapus."""
+        label = (label or "").strip()
+        if not label:
+            return {"ok": False, "error": "label akun wajib diisi"}
+
+        bersih = ""
+        if proxy:
+            from .proxy import parse as _parse_proxy  # noqa: PLC0415
+            try:
+                _p = _parse_proxy(proxy)
+                bersih = _p.url() if _p else ""
+            except ValueError as e:
+                return {"ok": False, "error": f"proxy tidak valid: {e}"}
+
+        akun = next((a for a in load_accounts(self.accounts_path) if a.label == label), None)
+        if akun is None and not (self.engine and label in self.engine.bots):
+            return {"ok": False, "error": f"akun '{label}' tidak ditemukan"}
+        if akun is not None:
+            akun.proxy = bersih or None
+            upsert_account(self.accounts_path, akun)
+        if self.engine and label in self.engine.bots:
+            self.engine.bots[label].proxy = bersih or None
+
+        self._log(f"[akun] {label}: proxy {'diset' if bersih else 'dihapus'}")
+        return {"ok": True, "label": label, "proxy": bersih}
 
     def hapus_akun(self, label: str) -> dict[str, Any]:
         """Hapus akun + bot-nya."""

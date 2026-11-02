@@ -689,14 +689,33 @@ class Handler(BaseHTTPRequestHandler):
             return bots.get(label)
         return self.runner.engine.parent or (next(iter(bots.values())) if bots else None)
 
-    def _fitur_snapshot(self) -> dict:
-        bot = self._bot()
-        if bot is None:
-            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+    def _fitur_snapshot(self, label: str = "") -> dict:
+        """Snapshot fitur untuk SATU bot, plus daftar semua bot (multi-akun).
+
+        `bots` dipakai panel kiri mod menu: tiap akun punya baris sendiri dan
+        bisa dinyalakan/dimatikan terpisah. `label` kosong = bot aktif.
+        """
         from .features import TILE_MENU  # noqa: PLC0415
 
+        bot = self._bot(label)
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+
+        daftar = []
+        if self.runner and self.runner.engine:
+            for b in self.runner.engine.bots.values():
+                st = b.stats()
+                daftar.append({
+                    "label": b.label,
+                    "status": st.get("status"),
+                    "world": st.get("world") or "",
+                    "ping": st.get("ping"),
+                    "parent": b is self.runner.engine.parent,
+                    "autofarm": b.fitur.autofarm.berjalan,
+                })
+
         return {"ok": True, "label": bot.label, "status": bot.fitur.status(),
-                "menu": TILE_MENU, "bot": bot.stats()}
+                "menu": TILE_MENU, "bot": bot.stats(), "bots": daftar}
 
     def _peta(self, label: str) -> dict:
         """Peta dunia siap-render: hanya tile tak-kosong supaya payload kecil."""
@@ -758,6 +777,25 @@ class Handler(BaseHTTPRequestHandler):
         if nama == "stop_all":
             fb.stop_semua()
             return {"ok": True, "status": fb.status()}
+        if nama in ("start_all", "stop_all_bots"):
+            """Nyalakan/matikan satu fitur di SEMUA bot sekaligus."""
+            hasil = {}
+            for label_bot, b in (self.runner.engine.bots.items()
+                                 if self.runner and self.runner.engine else []):
+                f = getattr(b.fitur, "autofarm", None)
+                if f is None:
+                    continue
+                try:
+                    if nama == "start_all":
+                        if opts:
+                            f.atur(**opts)
+                        f.start()
+                    else:
+                        f.stop()
+                    hasil[label_bot] = f.berjalan
+                except Exception as e:  # noqa: BLE001
+                    hasil[label_bot] = f"gagal: {e}"
+            return {"ok": True, "bots": hasil}
         if nama == "growscan":
             return {"ok": True, "scan": fb.growscan.scan()}
         if nama == "command":
@@ -770,13 +808,16 @@ class Handler(BaseHTTPRequestHandler):
         if obj is None:
             return {"ok": False, "error": f"fitur '{nama}' tidak dikenal"}
 
+        # Autofarm punya banyak tombol di deltaX: pakai `atur()` yang memetakan
+        # alias (punch_count, autopunch_delay, overclock, autodrop_*, ...).
+        if nama == "autofarm" and opts:
+            fb.autofarm.atur(**opts)
+
         # terapkan opsi (nama field deltaX dipakai apa adanya)
         for k, v in opts.items():
-            if k == "seed_id":
-                fb.autofarm.seed_id = int(v or 0)
-            elif k == "tiles":
-                fb.autofarm.set_tiles(v)
-            elif k == "texts":
+            if k in ("seed_id", "tiles") or nama == "autofarm":
+                continue
+            if k == "texts":
                 for t in (v if isinstance(v, list) else [v]):
                     fb.spammer.tambah(t)
             elif k == "radius":
@@ -849,7 +890,7 @@ class Handler(BaseHTTPRequestHandler):
                         })
             self._json({"scripts": scripts})
         elif path == "/api/features":
-            self._json(self._fitur_snapshot())
+            self._json(self._fitur_snapshot(self._query().get("label", "")))
         elif path == "/api/map":
             self._json(self._peta(self._query().get("label", "")))
         elif path == "/api/logs":
@@ -863,7 +904,7 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path not in ("/api/command", "/api/login", "/api/login/hp",
                         "/api/account/delete", "/api/feature",
-                        "/api/script/save",
+                        "/api/script/save", "/api/proxy",
                         "/api/connect", "/api/disconnect"):
             self._json({"error": "tidak ditemukan"}, 404)
             return
@@ -892,6 +933,7 @@ class Handler(BaseHTTPRequestHandler):
                     ltoken=str(payload.get("ltoken") or ""),
                     method=str(payload.get("method") or ""),
                     connect=bool(payload.get("connect", False)),
+                    proxy=str(payload.get("proxy") or ""),
                 ))
 
             elif path == "/api/login/hp":
@@ -912,6 +954,24 @@ class Handler(BaseHTTPRequestHandler):
 
             elif path == "/api/account/delete":
                 self._json(self.runner.hapus_akun(str(payload.get("label") or "")))
+
+            elif path == "/api/proxy":
+                # {label, proxy} -> set/hapus; {proxy} tanpa label -> uji saja
+                label = str(payload.get("label") or "").strip()
+                if not label:
+                    from .proxy import parse as _parse_proxy, uji as _uji  # noqa: PLC0415
+                    try:
+                        pxy = _parse_proxy(str(payload.get("proxy") or ""))
+                    except ValueError as e:
+                        self._json({"ok": False, "error": str(e)})
+                        return
+                    if pxy is None:
+                        self._json({"ok": False, "error": "isi proxy dulu"})
+                        return
+                    ok, pesan = _uji(pxy)
+                    self._json({"ok": ok, "pesan": pesan, "proxy": pxy.url(sandi=False)})
+                    return
+                self._json(self.runner.atur_proxy(label, str(payload.get("proxy") or "")))
 
             elif path == "/api/feature":
                 self._json(self._terapkan_fitur(payload))

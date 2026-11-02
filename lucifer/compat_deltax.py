@@ -97,14 +97,24 @@ def pasang(engine) -> None:
         default = args[0] if args else None
         return nilai.ambil(alias, default)
 
+    def _jenis_nilai(value):
+        """deltaX: 0 = toggle, 1 = angka, 5 = teks."""
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return 1
+        return 5
+
     def editValue(alias, value=None):
         nilai.setel(alias, value)
+        # deltaX memanggil hook `onvalue` setiap kali UI mengubah nilai;
+        # skrip memakai itu untuk bereaksi (mis. simpan posisi drop).
+        engine._queue.put(("value", (_jenis_nilai(value), str(alias), value)))
         return True
 
     def setValue(alias, value=None):
         """`setValue` deltaX mengubah toggle; samakan dengan editValue."""
-        nilai.setel(alias, value)
-        return True
+        return editValue(alias, value)
 
     def bindValue(tipe, alias, default=None):
         """Kembalikan fungsi pembaca nilai (dipakai `automation.lua`)."""
@@ -287,7 +297,10 @@ def pasang(engine) -> None:
         if not b or not _tabel(var):
             return False
         vl = P.VariantList()
-        for key in sorted(k for k in var.keys() if str(k).startswith("v")):
+        # Urutkan numerik (v2 sebelum v10) dan hanya `v<angka>`; kunci lain
+        # seperti `value`/`type` bukan bagian VariantList.
+        kunci = [k for k in var.keys() if str(k)[:1] == "v" and str(k)[1:].isdigit()]
+        for key in sorted(kunci, key=lambda k: int(str(k)[1:])):
             val = var[key]
             if isinstance(val, bool):
                 vl.append(P.Variant.from_int(int(val)))
@@ -295,10 +308,18 @@ def pasang(engine) -> None:
                 vl.append(P.Variant.from_int(int(val)))
             else:
                 vl.append(P.Variant.from_string(str(val)))
-        tank = packet if isinstance(packet, P.Tank) else P.Tank(
-            type=P.NetGamePacket.CallFunction,
-            net_id=int(netid if netid is not None else 0),
-        )
+        # `packet` bisa Tank, atau tabel Lua hasil `getObjectList`-style
+        # (`var_send` di default.lua membawa `.netid`).
+        if isinstance(packet, P.Tank):
+            tank = packet
+        else:
+            nid = netid
+            if nid is None and _tabel(packet):
+                nid = packet["netid"]
+            tank = P.Tank(
+                type=P.NetGamePacket.CallFunction,
+                net_id=int(nid or 0),
+            )
         return b.send_raw(tank, vl.serialize())
 
     g.sendPacket = sendPacket
@@ -307,16 +328,51 @@ def pasang(engine) -> None:
     g.sendVariant = sendVariant
 
     # -- hook ------------------------------------------------------------ #
+    # deltaX menamai hook `onvariant`/`ongamepacket`; Lucifer memakai
+    # `variant`/`game_packet`. Tanpa peta ini semua handler mati diam-diam
+    # (tidak pernah ditembak) — persis gejala "fitur cuma on/off".
+    HOOK_ALIAS = {
+        "onvariant": "variant",
+        "ongamepacket": "game_packet",
+        "ondialog": "dialog",
+        "onvalue": "value",
+        "onsendpacket": "send_packet",
+        "onsendpacketraw": "send_raw",
+        "ondraw": "draw",
+        "ondrawimgui": "draw",
+    }
+
     def addHook(fn, name=None):
-        """deltaX: addHook(fungsi, "onvariant"). Dipetakan ke addEvent."""
+        """deltaX: `addHook(fungsi, "onvariant")`."""
         if name is None:
             return False
-        engine._add_event(str(name).lower(), fn)
+        kunci = str(name).lower()
+        event = HOOK_ALIAS.get(kunci, kunci)
+        engine._add_event(event, _bungkus_hook(event, fn))
         return True
 
     def removeHook(name=None):
-        engine._remove_event(str(name or "").lower())
+        kunci = str(name or "").lower()
+        engine._remove_event(HOOK_ALIAS.get(kunci, kunci))
         return True
+
+    def _bungkus_hook(event, fn):
+        """Samakan bentuk argumen hook deltaX dengan event Lucifer.
+
+        deltaX: `onVariant(var, packet)` (packet punya `.netid`),
+        `onGamePacket(packet)`. Lucifer mengirim `(vl, netid)` dan `Tank`.
+        """
+        if event == "variant":
+            def _var(vl, netid=0):
+                pkt = lua.table()
+                pkt.netid = int(netid)
+                return fn(vl, pkt)
+            return _var
+        if event == "game_packet":
+            def _pkt(tank):
+                return fn(engine._game_packet_from_tank(tank))
+            return _pkt
+        return fn
 
     def runCoroutine(fn, *args):
         """deltaX menjalankan fungsi di thread sendiri (coroutine terpisah)."""

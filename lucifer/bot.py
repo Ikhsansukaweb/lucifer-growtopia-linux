@@ -293,6 +293,12 @@ class Bot:
         self.meta = ""
         self.redirected = False
 
+        # penjaga rekursi hook `onsendpacket`: handler Lua boleh mengirim
+        # paket lain, tapi kiriman itu TIDAK boleh memicu hook lagi (deltaX
+        # memakai pola ini untuk mengganti isi dialog sebelum dikirim).
+        self._dalam_hook = False
+        self._draw_ts = 0.0
+
         # perilaku otomatis (dipakai skrip)
         self.auto_reconnect = True
         # ⚠️ ANTI-ERCON (2026-10-04): sebelumnya loop reconnect menembak server
@@ -437,10 +443,12 @@ class Bot:
 
         proxy = None
         if self.proxy:
-            parts = self.proxy.replace("socks5://", "").split(":")
-            if len(parts) >= 2:
-                proxy = (parts[0], int(parts[1]), parts[2] if len(parts) > 2 else "",
-                         parts[3] if len(parts) > 3 else "")
+            from .proxy import parse as _parse_proxy  # noqa: PLC0415
+            try:
+                _p = _parse_proxy(self.proxy)
+                proxy = _p.tuple4() if _p else None
+            except ValueError as e:
+                self._emit("error", f"proxy tidak valid ({e}) — connect tanpa proxy")
 
         self.status = BotStatus.connecting
         self.host = ENetHost(proxy=proxy)
@@ -551,8 +559,15 @@ class Bot:
                 except Exception as e:  # noqa: BLE001
                     log.warning("[%s] gagal menangani paket: %s", self.label, e)
 
-            # balas ping berkala (jaga koneksi)
+            # tick `ondraw` (deltaX: pengganti render loop). Cukup ~20 Hz
+            # supaya skrip yang memakai ondraw untuk timer tetap hidup.
             now = time.time()
+            if now - self._draw_ts >= 0.05:
+                delta = int((now - self._draw_ts) * 1000) if self._draw_ts else 0
+                self._draw_ts = now
+                self._emit("draw", delta)
+
+            # balas ping berkala (jaga koneksi)
             if now - self._last_ping_ts > 5:
                 self._last_ping_ts = now
 
@@ -681,6 +696,8 @@ class Bot:
             return
         fn = vl.func_name()
         self._emit("variant", (vl, tank.net_id))
+        if fn == "OnDialogRequest":
+            self._emit("dialog", vl.get(2).as_string() if vl.get(2) else "")
 
         if fn == "OnConsoleMessage":
             msg = P.remove_color(vl.get(1).as_string() if vl.get(1) else "")
@@ -887,6 +904,18 @@ class Bot:
     def send_text(self, mtype: int, body: bytes) -> bool:
         if not self.host:
             return False
+        # Hook `onsendpacket` (deltaX). Mengembalikan True = paket dibatalkan
+        # dan handler sudah mengirim penggantinya sendiri.
+        if not self._dalam_hook and self.on_event:
+            try:
+                self._dalam_hook = True
+                teks = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+                if self.on_event("send_packet", (teks, int(mtype))) is True:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._dalam_hook = False
         with self._lock:
             return self.host.send(P.build_packet(mtype, body))
 
@@ -914,6 +943,14 @@ class Bot:
                 int_x=int(getattr(tank, "int_x", 0)),
                 int_y=int(getattr(tank, "int_y", 0)),
             )
+        if not self._dalam_hook and self.on_event:
+            try:
+                self._dalam_hook = True
+                self.on_event("send_raw", tank)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._dalam_hook = False
         body = tank.to_bytes(extended)
         return self.send_text(M.GamePacket, body)
 
@@ -1243,5 +1280,6 @@ class Bot:
             "active_time": self.getActiveTime(),
             "captcha": self.captcha_status,
             "redirected": self.redirected,
+            "proxy": self.proxy or "",
             "recent": list(self._action_log)[-12:],
         }

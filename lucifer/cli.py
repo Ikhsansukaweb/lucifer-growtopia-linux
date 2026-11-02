@@ -738,14 +738,28 @@ def cmd_desktop(args) -> int:
     import subprocess  # noqa: PLC0415
     from pathlib import Path as _P  # noqa: PLC0415
 
-    # cari skripnya: di repo, atau di ~/.local/bin
+    # GUI native (GTK3) diutamakan kalau sudah dibangun.
+    repo = _P(__file__).resolve().parent.parent
+    native = [
+        repo / "desktop" / "build" / "lucifer-desktop",
+        _P.home() / ".local" / "bin" / "lucifer-desktop",
+    ]
+    biner = next((p for p in native if p.exists() and os.access(p, os.X_OK)), None)
+    if biner is not None:
+        argv = [str(biner), "--repo", str(repo), "--port", str(args.port)]
+        if args.stop:
+            argv = ["pkill", "-f", "lucifer.cli web"]
+        return subprocess.call(argv)
+
+    # fallback: bungkus Chrome mode --app
     kandidat = [
-        _P(__file__).resolve().parent.parent / "deploy" / "lucifer-desktop.sh",
+        repo / "deploy" / "lucifer-desktop.sh",
         _P.home() / ".local" / "bin" / "lucifer-desktop",
     ]
     skrip = next((p for p in kandidat if p.exists()), None)
     if skrip is None:
-        print(bad("skrip lucifer-desktop.sh tidak ditemukan (deploy/lucifer-desktop.sh)"))
+        print(bad("GUI native belum dibangun. Jalankan:\n"
+                  "  cmake -B desktop/build -S desktop && cmake --build desktop/build -j"))
         return 1
 
     argv = ["bash", str(skrip)]

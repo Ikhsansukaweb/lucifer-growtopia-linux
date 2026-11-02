@@ -69,11 +69,27 @@ TILE_MENU: dict[str, str] = {
     "autofarm_autocollect_start": "ambil objek jatuh di sekitar",
     "autofarm_do_break": "atur boleh memecah",
     "autofarm_do_place": "atur boleh menanam",
+    "autofarm_verify": "hanya pukul tile yang benar-benar siap panen",
+    "autofarm_verify_pos": "cek posisi pemain sebelum lanjut",
+    "autofarm_verify_delay": "jeda setelah menyesuaikan posisi (ms)",
     "autofarm_punch_count": "jumlah pukulan per tile",
     "autofarm_autopunch_delay": "jeda antar pukulan (ms)",
     "autofarm_autoplace_delay": "jeda antar tanam (ms)",
+    "autofarm_config_overclock": "potong semua jeda 40%",
+    "autofarm_config_showpunch": "kirim semua pukulan tanpa jeda",
     "autofarm_target_tile": "daftar tile sasaran (x,y)",
     "autofarm_item_picker": "id bibit yang ditanam",
+    "autofarm_autocollect_delay": "jeda antar ambil objek (ms)",
+    "autofarm_autocollect_block": "ikut ambil blok (id genap)",
+    "autofarm_autocollect_seed": "ikut ambil bibit (id ganjil)",
+    "autofarm_autodrop_start": "drop otomatis saat inventaris penuh",
+    "autofarm_autodrop_minimum": "jumlah minimum sebelum dibuang",
+    "autofarm_autodrop_x": "posisi X tempat drop",
+    "autofarm_autodrop_y": "posisi Y tempat drop",
+    "autofarm_autodrop_worldname": "dunia tujuan drop (kosong = dunia ini)",
+    "autofarm_autopick_enable": "ambil item di dunia lain",
+    "autofarm_autopick_world": "dunia sumber pick",
+    "autofarm_autopick_mode": "mode pick: nearest | all",
     "autocollectstart": "ambil objek jatuh",
     "auto_collect_delay": "jeda antar ambil (ms)",
     "auto_collect_radius": "radius ambil (tile)",
@@ -131,32 +147,162 @@ def _tunggu(stop: threading.Event, detik: float) -> bool:
 class AutoFarm:
     """Auto tanam + panen, setara `autofarm_*` deltaX.
 
-    Yang dilakukan tiap siklus (semua lewat paket nyata):
-      1. pukul tile sasaran yang sudah siap panen  -> `bot.hit(x,y)`
-      2. ambil objek jatuh di sekitar              -> `bot.collectObject`
-      3. tanam bibit di tile kosong sasaran        -> `bot.place(x,y,item)`
+    Semua parameter di bawah mengikuti `assets/menu.json` deltaX (sub-kategori
+    Automation/Autofarm), jadi tiap tombol di sana punya padanan di sini:
 
-    `target_tiles` = daftar (x, y) manual (tile_select deltaX). Kalau kosong,
-    dipakai seluruh tile yang punya background tanah.
+      autofarm_item_picker       seed_id
+      autofarm_target_tile       set_tiles()
+      autofarm_verify            verify
+      autofarm_do_break          do_break
+      autofarm_do_place          do_place
+      autofarm_punch_count       punch_count
+      autofarm_autopunch_delay   punch_delay
+      autofarm_autoplace_delay   place_delay
+      autofarm_config_overclock  faster      (jeda dipotong 40%)
+      autofarm_config_showpunch  show_punch  (hit berulang tanpa jeda ekstra)
+      autofarm_autocollect_*     collect / collect_delay / collect_block / collect_seed
+      autofarm_autodrop_*        drop_aktif / drop_minimum / drop_x / drop_y / drop_world
+      autofarm_autopick_*        pick_aktif / pick_world / pick_mode
+      autofarm_verify_pos        verify_pos
+      autofarm_verify_delay      verify_delay
+
+    Alur satu siklus (meniru `automation.lua` deltaX):
+
+        buang  ->  pindah dunia (kalau perlu)  ->  ambil  ->  panen  ->  tanam
+
+    Semua aksi lewat paket nyata: `bot.hit`, `bot.place`, `bot.collectObject`,
+    `bot.drop`, `bot.trash`, `bot.warp`.
     """
 
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.aktif = False
+
+        # -- sasaran ----------------------------------------------------- #
+        self.seed_id = 0
+        self.target_tiles: list[tuple[int, int]] = []
+
+        # -- apa yang dikerjakan ------------------------------------------ #
+        self.do_break = True
+        self.do_place = True
+        self.verify = True          # verifikasi tile siap panen sebelum pukul
+        self.verify_pos = False     # verifikasi posisi pemain sebelum lanjut
+        self.verify_delay = 250     # ms, jeda setelah menyesuaikan posisi
+
+        # -- kecepatan ---------------------------------------------------- #
         self.punch_count = 1
         self.punch_delay = 180      # ms
         self.place_delay = 220      # ms
-        self.collect_delay = 120    # ms
-        self.do_break = True
-        self.do_place = True
-        self.seed_id = 0
-        self.target_tiles: list[tuple[int, int]] = []
+        self.siklus_delay = 1000    # ms, jeda antar siklus
+        self.faster = False         # autofarm_config_overclock
+        self.show_punch = False     # autofarm_config_showpunch
+
+        # -- auto collect -------------------------------------------------- #
+        self.collect = True
+        self.collect_delay = 120
         self.collect_radius = 3
-        self.verify = True
+        self.collect_block = True    # ambil blok (id genap)
+        self.collect_seed = True     # ambil bibit (id ganjil)
+
+        # -- auto drop ----------------------------------------------------- #
+        self.drop_aktif = False
+        self.drop_minimum = 180
+        self.drop_x = 0
+        self.drop_y = 0
+        self.drop_world = ""         # dunia tujuan drop (kosong = dunia ini)
+        self.drop_mode = "drop"      # "drop" | "trash"
+        self.drop_total = 0
+
+        # -- auto pick (telur/seed pack di dunia lain) --------------------- #
+        self.pick_aktif = False
+        self.pick_world = ""
+        self.pick_mode = "nearest"   # "nearest" | "all"
+
+        # -- hasil --------------------------------------------------------- #
         self.siklus: list[int] = []
+        self.dipanen_total = 0
+        self.ditanam_total = 0
+        self.diambil_total = 0
         self._s = _Siklus("autofarm")
 
     # -- sasaran --------------------------------------------------------- #
+    def atur(self, **kw) -> dict[str, Any]:
+        """Set parameter sekaligus, nama kunci = alias deltaX tanpa `autofarm_`.
+
+        Dipakai dashboard & Lua supaya tidak perlu satu method per tombol:
+
+            af.atur(seed_id=3, punch_count=3, punch_delay=120, faster=True,
+                    do_place=False, collect=False, drop_aktif=True)
+
+        Kunci tak dikenal diabaikan (bukan error) supaya skrip lama tetap jalan.
+        """
+        peta = {
+            "seed_id": "seed_id",
+            "item_picker": "seed_id",
+            "target_tile": "target_tiles",
+            "verify": "verify",
+            "verify_pos": "verify_pos",
+            "verify_delay": "verify_delay",
+            "do_break": "do_break",
+            "do_place": "do_place",
+            "punch_count": "punch_count",
+            "autopunch_delay": "punch_delay",
+            "punch_delay": "punch_delay",
+            "autoplace_delay": "place_delay",
+            "place_delay": "place_delay",
+            "siklus_delay": "siklus_delay",
+            "overclock": "faster",
+            "faster": "faster",
+            "showpunch": "show_punch",
+            "show_punch": "show_punch",
+            # autocollect
+            "autocollect_start": "collect",
+            "collect": "collect",
+            "autocollect_delay": "collect_delay",
+            "collect_delay": "collect_delay",
+            "collect_radius": "collect_radius",
+            "autocollect_block": "collect_block",
+            "collect_block": "collect_block",
+            "autocollect_seed": "collect_seed",
+            "collect_seed": "collect_seed",
+            # autodrop
+            "autodrop_start": "drop_aktif",
+            "drop_aktif": "drop_aktif",
+            "autodrop_minimum": "drop_minimum",
+            "drop_minimum": "drop_minimum",
+            "autodrop_x": "drop_x",
+            "drop_x": "drop_x",
+            "autodrop_y": "drop_y",
+            "drop_y": "drop_y",
+            "autodrop_worldname": "drop_world",
+            "drop_world": "drop_world",
+            "drop_mode": "drop_mode",
+            # autopick
+            "autopick_enable": "pick_aktif",
+            "pick_aktif": "pick_aktif",
+            "autopick_world": "pick_world",
+            "pick_world": "pick_world",
+            "autopick_mode": "pick_mode",
+            "pick_mode": "pick_mode",
+        }
+        diterapkan = {}
+        for kunci, nilai in kw.items():
+            nama = peta.get(str(kunci))
+            if nama is None:
+                continue
+            if nama == "target_tiles":
+                self.set_tiles(nilai)
+            elif nama in ("do_break", "do_place", "verify", "verify_pos", "faster",
+                          "show_punch", "collect", "collect_block", "collect_seed",
+                          "drop_aktif", "pick_aktif"):
+                setattr(self, nama, bool(nilai))
+            elif nama in ("drop_mode", "drop_world", "pick_world", "pick_mode"):
+                setattr(self, nama, str(nilai))
+            else:
+                setattr(self, nama, int(nilai))
+            diterapkan[nama] = getattr(self, nama)
+        return diterapkan
+
     def set_tiles(self, tiles) -> list[tuple[int, int]]:
         """Tetapkan tile sasaran. Terima list (x,y) atau list dict {x,y}."""
         out: list[tuple[int, int]] = []
@@ -165,6 +311,8 @@ class AutoFarm:
                 out.append((int(t[0]), int(t[1])))
             elif isinstance(t, dict):
                 out.append((int(t.get("x", 0)), int(t.get("y", 0))))
+            elif hasattr(t, "x") and hasattr(t, "y"):
+                out.append((int(t.x), int(t.y)))
         self.target_tiles = out
         return out
 
@@ -180,17 +328,33 @@ class AutoFarm:
                 if t is not None:
                     out.append(t)
             return out
-        return [t for t in w.tiles if t.bg == BG_TANAH or t.bg != 0]
+        return [t for t in w.tiles if t.bg != 0]
 
     def siap_panen(self) -> list[Tile]:
-        """Tile sasaran yang tanamannya sudah bisa dipetik."""
-        return [t for t in self.tiles_sasaran() if t.is_seed and t.ready]
+        """Tile sasaran yang tanamannya sudah bisa dipetik.
+
+        `verify` mematikan memeriksa `ready`; tanpa itu semua tile bertanaman
+        dipukul (lebih cepat, tapi memboroskan pukulan).
+        """
+        out = []
+        for t in self.tiles_sasaran():
+            if not t.is_seed:
+                continue
+            if self.verify and not t.ready:
+                continue
+            out.append(t)
+        return out
 
     def kosong(self) -> list[Tile]:
         """Tile sasaran yang bisa ditanami."""
         return [t for t in self.tiles_sasaran() if t.fg == 0 and t.bg != 0]
 
-    # -- aksi ------------------------------------------------------------ #
+    # -- jeda ------------------------------------------------------------- #
+    def _jeda(self, ms: float) -> float:
+        """Terapkan `faster` (overclock) ke semua jeda."""
+        return (float(ms) * 0.6 if self.faster else float(ms)) / 1000.0
+
+    # -- aksi -------------------------------------------------------------- #
     def panen(self) -> int:
         if not self.do_break:
             return 0
@@ -200,16 +364,40 @@ class AutoFarm:
                 break
             for _ in range(max(1, int(self.punch_count))):
                 self.bot.hit(t.x, t.y)
-                if _tunggu(self._s._stop, self.punch_delay / 1000):
-                    return n
+                # `showpunch` = kirim semua pukulan tanpa jeda; default beri jeda
+                # supaya server sempat memproses tiap pukulan.
+                if not self.show_punch:
+                    if _tunggu(self._s._stop, self._jeda(self.punch_delay)):
+                        return n
             n += 1
+            self.dipanen_total += 1
         return n
 
     def ambil(self) -> int:
+        """Ambil objek jatuh. Filter blok/bibit mengikuti `collect_block`/`collect_seed`."""
+        if not self.collect:
+            return 0
         total = 0
         for _ in range(4):
-            n = self.bot.collect(range_=self.collect_radius, interval=self.collect_delay)
+            w = self.bot.world
+            n = 0
+            for d in list(w.dropped):
+                if self._s._stop.is_set():
+                    return total
+                if not self.bot._in_range_px(d.x, d.y, self.collect_radius):
+                    continue
+                # id bibit = ganjil, id blok = genap (konvensi Growtopia)
+                if d.item_id % 2 == 0 and not self.collect_block:
+                    continue
+                if d.item_id % 2 == 1 and not self.collect_seed:
+                    continue
+                self.bot.collectObject(d.uid)
+                n += 1
+                if self.collect_delay:
+                    if _tunggu(self._s._stop, self._jeda(self.collect_delay)):
+                        return total
             total += n
+            self.diambil_total += n
             if n == 0:
                 break
             if _tunggu(self._s._stop, 0.35):
@@ -228,22 +416,49 @@ class AutoFarm:
                 break
             self.bot.place(t.x, t.y, self.seed_id)
             n += 1
-            if _tunggu(self._s._stop, self.place_delay / 1000):
+            self.ditanam_total += 1
+            if _tunggu(self._s._stop, self._jeda(self.place_delay)):
                 break
         return n
 
+    def buang(self) -> int:
+        """Drop/trash item yang melewati `drop_minimum` (autofarm_autodrop_*)."""
+        if not self.drop_aktif:
+            return 0
+        inv = self.bot.inventory
+        n = 0
+        target = self.seed_id if self.seed_id else 0
+        for item_id, it in list(inv.items.items()):
+            if target and item_id not in (target, target - 1):
+                continue
+            if it.count < self.drop_minimum:
+                continue
+            if self._s._stop.is_set():
+                break
+            if self.drop_mode == "trash":
+                self.bot.trash(item_id, it.count)
+            else:
+                self.bot.drop(item_id, it.count)
+            n += 1
+            if _tunggu(self._s._stop, self._jeda(self.place_delay)):
+                break
+        self.drop_total += n
+        return n
+
+    # -- siklus ------------------------------------------------------------ #
     def satu_siklus(self) -> dict[str, int]:
-        """Satu putaran penuh: panen -> ambil -> tanam."""
+        """Satu putaran penuh: buang -> ambil -> panen -> tanam."""
         hasil = {
-            "dipanen": self.panen(),
+            "dibuang": self.buang(),
             "diambil": self.ambil(),
+            "dipanen": self.panen(),
             "ditanam": self.tanam(),
         }
         self.siklus.append(hasil["dipanen"] + hasil["ditanam"])
         return hasil
 
-    # -- loop ------------------------------------------------------------ #
-    def start(self, jeda: float = 1.0) -> bool:
+    # -- loop -------------------------------------------------------------- #
+    def start(self, jeda: float | None = None) -> bool:
         if self._s.aktif:
             return True
         if self.bot.status != BotStatus.online:
@@ -253,6 +468,7 @@ class AutoFarm:
         if self.do_place and not self.seed_id:
             raise FeatureError("seed_id belum diset (autofarm_item_picker)")
 
+        bila_none = self.siklus_delay / 1000.0
         self._s = _Siklus("autofarm", aktif=True)
 
         def loop() -> None:
@@ -261,7 +477,7 @@ class AutoFarm:
                     self.satu_siklus()
                 except Exception:  # noqa: BLE001
                     pass
-                if _tunggu(self._s._stop, jeda):
+                if _tunggu(self._s._stop, bila_none if jeda is None else float(jeda)):
                     break
             self._s.aktif = False
             self.aktif = False
@@ -287,7 +503,27 @@ class AutoFarm:
             "siap_panen": len(self.siap_panen()) if self.bot.world.tiles else 0,
             "kosong": len(self.kosong()) if self.bot.world.tiles else 0,
             "siklus": len(self.siklus),
-            "dipanen_total": sum(self.siklus),
+            "dipanen_total": self.dipanen_total,
+            "ditanam_total": self.ditanam_total,
+            "diambil_total": self.diambil_total,
+            "dibuang_total": self.drop_total,
+            "do_break": self.do_break,
+            "do_place": self.do_place,
+            "verify": self.verify,
+            "punch_count": self.punch_count,
+            "punch_delay": self.punch_delay,
+            "place_delay": self.place_delay,
+            "siklus_delay": self.siklus_delay,
+            "faster": self.faster,
+            "collect": self.collect,
+            "collect_radius": self.collect_radius,
+            "collect_block": self.collect_block,
+            "collect_seed": self.collect_seed,
+            "drop_aktif": self.drop_aktif,
+            "drop_minimum": self.drop_minimum,
+            "drop_world": self.drop_world,
+            "pick_aktif": self.pick_aktif,
+            "pick_world": self.pick_world,
         }
 
 
@@ -1012,12 +1248,16 @@ class FiturBot:
         rp, gs, cm = self.replay, self.growscan, self.commands
         return {
             # autofarm
-            "autofarm_start": lambda **kw: af.start(float(kw.get("jeda", 1.0))),
+            "autofarm_start": lambda **kw: af.start(
+                float(kw["jeda"]) if "jeda" in kw else None
+            ),
             "autofarm_stop": af.stop,
             "autofarm_status": af.info,
+            "autofarm_atur": af.atur,
             "autofarm_set_tiles": af.set_tiles,
             "autofarm_set_seed": lambda i: setattr(af, "seed_id", int(i)) or af.seed_id,
             "autofarm_step": af.satu_siklus,
+            "autofarm_buang": af.buang,
             # autocollect
             "autocollect_start": lambda **kw: ac.start(float(kw.get("jeda", 0.5))),
             "autocollect_stop": ac.stop,
