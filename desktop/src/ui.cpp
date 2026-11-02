@@ -423,6 +423,7 @@ GtkWidget *App::tab_bots() {
 
     // ---- tabel ----
     GtkWidget *kanan = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_margin_start(kanan, 4);
     gtk_paned_pack2(GTK_PANED(body), kanan, TRUE, FALSE);
 
     store_bots_ = gtk_list_store_new(9, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
@@ -432,7 +433,7 @@ GtkWidget *App::tab_bots() {
     gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(view_bots_), GTK_TREE_VIEW_GRID_LINES_NONE);
     const char *judul[] = {"BOT", "NAMA", "LEVEL", "PING", "STATUS", "PROXY",
                            "DUNIA", "POSISI", "GEMS"};
-    const int lebar[] = {120, 140, 55, 60, 120, 190, 140, 80, 70};
+    const int lebar[] = {110, 130, 52, 58, 110, 170, 120, 70, 62};
     for (int i = 0; i < 9; ++i) add_col(view_bots_, judul[i], i, lebar[i]);
     g_signal_connect(view_bots_, "cursor-changed", G_CALLBACK(on_bot_row), this);
 
