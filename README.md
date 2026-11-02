@@ -318,7 +318,49 @@ Kalau kamu menempel blok `client_data` mentah, ltoken diambil otomatis —
 pengurainya ada di sisi browser (JS) **dan** di `tools/ltoken.py`, keduanya
 mendukung tiga bentuk: per baris, satu baris dipisah `|`, dan base64.
 
-### Aplikasi desktop
+### Fitur otomasi (padanan deltaX)
+
+`lucifer/features.py` mengisi menu yang **bisa** dibawa ke klien protokol —
+semuanya mengirim paket asli ke server, tidak ada satu pun yang memalsukan
+tampilan. Nama alias mengikuti `assets/menu.json` deltaX supaya mudah
+dicocokkan.
+
+| Fitur | Alias deltaX | Isi |
+|---|---|---|
+| AutoFarm | `autofarm_start`, `autofarm_item_picker`, `autofarm_target_tile` | panen → ambil → tanam, pakai `hit()`/`collect()`/`place()` |
+| AutoCollect | `autocollectstart`, `auto_collect_radius` | ambil objek jatuh di radius tertentu |
+| Spammer | `spammer_config_start`, `spammer_config_texttospam` | chat berkala, urut atau acak |
+| AutoDrop | `cheat_config_fastdrop_active`, `cheat_config_fasttrash_active` | drop/trash item di atas batas jumlah |
+| FindPath | `findpath_config_blockjump`, `findpath_config_teleport_path` | BFS yang menghitung tile terpasang sebagai penghalang |
+| Replay | `replay_record_active`, `replay_play_active`, `replay_loop` | rekam aksi keluar lalu putar ulang (JSON di `data/replay/`) |
+| Growscan | `cheat_growscan_open` | pindai blok/tanaman/objek jatuh di dunia |
+| Chat commands | `cmd_warp`, `cmd_back`, `cmd_finditem`, `cmd_gscan`, `cmd_pullall`, `cmd_alias`, `cmd_bind` | perintah `/...` yang ditangani lokal, tidak dikirim ke server |
+
+Dipanggil dari Lua dengan nama yang sama (`autofarm_start()`,
+`spammer_add("halo")`, `growscan()`, `command("/warp FARM")`, …), semuanya
+menerima `bot=` opsional untuk multi-akun.
+
+**Yang tidak dipindah** karena butuh render/memori klien (bukan paket):
+`cheat_esp_player`, `cheat_esp_item`, `cheat_esp_ghost`, `noclip_and_ghost`,
+`features_invis_v2`, `visual_inventory_*`, `Antibounce`, `Gravity`, `Antipunch`,
+`cheat_config_moonwalk`, `cheat_config_fastfall`, `ModFly`, `Night Vision`.
+Klien bot tidak punya layar atau memori game untuk diubah — fitur itu tidak
+punya arti di sini.
+
+### Dashboard: peta dunia, fitur, dan skrip
+
+Selain panel login, dashboard punya:
+
+- **Peta Dunia** — `<canvas>` yang menggambar tile dunia (warna dari hash item
+  id), bibit siap panen, objek, dan posisi pemain.
+- **Fitur Otomasi** — tombol Start/Stop untuk AutoFarm, AutoCollect, Spammer,
+  AutoDrop, plus Rekam/Putar/Simpan replay dan Growscan.
+- **Skrip Lua** — kotak editor + tombol **Simpan** dan **Jalankan**
+  (`POST /api/script/save`, lalu `run <nama>.lua`).
+
+Endpoint: `GET /api/features`, `GET /api/map`, `POST /api/feature`,
+`POST /api/script/save`.
+
 
 `lucifer desktop` menjalankan server dashboard di latar lalu membukanya di
 Chrome mode `--app`: jendela sendiri, tanpa address bar dan tab, dengan ikon
@@ -426,6 +468,7 @@ lucifer-linux/
 │   ├── world.py          # parser dunia + flag tile
 │   ├── account.py        # login: legacy, growid, google, apple, ubi, token
 │   ├── bot.py            # bot: koneksi, state, aksi (say/warp/place/hit/...)
+│   ├── features.py       # otomasi gaya deltaX: autofarm/collect/spam/replay/growscan/cmd
 │   ├── lua_api.py        # API Lua Lucifer V1.8 lengkap
 │   ├── runner.py         # runner + hot reload
 │   ├── cli.py            # perintah `lucifer`

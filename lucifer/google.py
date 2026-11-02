@@ -124,11 +124,17 @@ def buat_state(panjang: int = 24) -> str:
 
 
 def url_login_google(state: str = "", prompt: str = "select_account",
-                     login_hint: str = "") -> str:
+                     login_hint: str = "", hybrid: bool = False) -> str:
     """Bangun URL login Google yang dipakai Growtopia/Growlauncher.
 
     Buka URL ini di browser, pilih akun Google, dan setelah disetujui browser
-    akan mendarat di `login.growtopiagame.com/google/callback?code=...`.
+    akan mendarat di `login.growtopiagame.com/google/callback`.
+
+    `hybrid=True` memakai `response_type=code id_token` +
+    `response_mode=fragment`. Ini yang membuat kita bisa mengambil
+    **id_token** sendiri dari `location.hash`: fragment TIDAK pernah dikirim
+    ke server Growtopia, jadi id_token tidak bocor ke siapa pun. id_token
+    inilah yang dipakai klien asli (`google/native/callback`).
 
     `state` selalu ikut dikirim (walau kosong → dibuat acak), karena Google
     hanya mengembalikan `state` yang kita kirim, dan server GT menolak
@@ -137,11 +143,14 @@ def url_login_google(state: str = "", prompt: str = "select_account",
     q = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
-        "response_type": "code",
+        "response_type": "code id_token" if hybrid else "code",
         "scope": "openid profile email",
         "prompt": prompt,
         "state": state or buat_state(),
     }
+    if hybrid:
+        q["response_mode"] = "fragment"
+        q["nonce"] = buat_state(16)
     if login_hint:
         q["login_hint"] = login_hint
     return GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(q)
@@ -434,12 +443,16 @@ def _eval_cdp(ws, expr: str, id_pesan: int, timeout: float = 6.0) -> str:
 def tangkap_code_dari_browser(url: str, batas: int = 300,
                               tampilkan: bool = True,
                               profil: str = "") -> HasilGoogle:
-    """Buka `url` di Chrome, lalu tunggu sampai muncul `?code=` di callback.
+    """Buka `url` di Chrome, lalu tunggu `id_token` / `code` dari callback.
 
     Pakai Chrome DevTools Protocol (tanpa Selenium/Playwright): Chrome
     dijalankan dengan `--remote-debugging-port`, lalu kita sambung ke WebSocket
-    halaman dan memantau navigasi. Begitu browser mendarat di
-    `login.growtopiagame.com/google/callback?code=...`, code-nya diambil.
+    halaman dan memantau navigasi.
+
+    `url` sebaiknya dibuat dengan `url_login_google(..., hybrid=True)`:
+    hasilnya mendarat di `.../google/callback#state=..&code=..&id_token=..`.
+    Fragment TIDAK dikirim ke server, jadi id_token cuma terlihat oleh kita —
+    inilah cara mendapatkan id_token tanpa client_secret.
 
     Pengguna tetap memilih akun Google & menyetujui sendiri di jendela browser
     — modul ini tidak menyentuh sandi Google.
@@ -556,7 +569,13 @@ def tangkap_code_dari_browser(url: str, batas: int = 300,
             cek_isi_terakhir = 0.0
 
             def baca_token(u: str) -> Optional[HasilGoogle]:
-                """Baca token dari halaman validate; None bila belum siap."""
+                """Baca id_token dari fragment, atau token dari halaman validate."""
+                isi = _eval_cdp(
+                    ws, "location.hash", id_eval)
+                fr = _dari_fragment(isi)
+                if fr.ok and (fr.details or {}).get("id_token"):
+                    fr.token = ""
+                    return fr
                 isi = _eval_cdp(
                     ws, "document.body?document.body.innerText:''", id_eval)
                 tok, pesan = _token_dari_isi(isi)
@@ -573,6 +592,13 @@ def tangkap_code_dari_browser(url: str, batas: int = 300,
             while time.time() < akhir:
                 halaman = [pg.get("url", "") for pg in _target_halaman(port)]
                 for u in halaman:
+                    if "google/callback" in u:
+                        # Fragment (id_token) tak muncul di /json/list — baca
+                        # langsung dari tab lewat CDP.
+                        r = _dari_fragment(_eval_cdp(ws, "location.href", id_eval))
+                        id_eval += 1
+                        if r.ok and (r.details or {}).get("id_token"):
+                            return r
                     if POLA_VALIDATE in u:
                         r = baca_token(u)
                         id_eval += 1
@@ -606,9 +632,11 @@ def tangkap_code_dari_browser(url: str, batas: int = 300,
                     if r is not None:
                         return r
                 elif u and "code=" in u and "growtopiagame.com" in u:
-                    cand = _dari_url(u)
+                    cand = _dari_fragment(u) if "#" in u else _dari_url(u)
                     if cand.ok and not kode_cadangan:
                         kode_cadangan = cand.code
+                    if cand.ok and (cand.details or {}).get("id_token"):
+                        return cand
                 # pengaman: sesekali cek isi halaman walau tak ada peristiwa
                 if time.time() - cek_isi_terakhir > 2.0:
                     cek_isi_terakhir = time.time()
@@ -661,18 +689,52 @@ def _dari_url(u: str) -> HasilGoogle:
                        message="code tertangkap")
 
 
+def _dari_fragment(u: str) -> HasilGoogle:
+    """Ambil `id_token` dari bagian `#fragment` URL callback.
+
+    Hybrid flow (`response_type=code id_token`, `response_mode=fragment`)
+    menaruh hasil di fragment; fragment TIDAK dikirim ke server, jadi
+    id_token hanya terlihat oleh browser (dan kita lewat CDP). Ini token
+    yang dipakai klien Growtopia asli.
+    """
+    p = urllib.parse.urlparse(u)
+    q = urllib.parse.parse_qs(p.fragment or p.query)
+    idt = (q.get("id_token") or [""])[0]
+    code = (q.get("code") or [""])[0]
+    state = (q.get("state") or [""])[0]
+    if idt:
+        return HasilGoogle(True, token="", code=code, url=u,
+                           details={"id_token": idt, "state": state,
+                                    "cara": "fragment"},
+                           message="id_token tertangkap")
+    if code:
+        return HasilGoogle(True, code=code, url=u, details={"state": state},
+                           message="code tertangkap (fragment)")
+    err = (q.get("error") or [""])[0]
+    return HasilGoogle(False, url=u,
+                       message=f"tidak ada id_token/code di fragment (error={err!r})")
+
+
 # --------------------------------------------------------------------------- #
 # Alur lengkap
 # --------------------------------------------------------------------------- #
 def login_google(batas: int = 300, tampilkan: bool = True, state: str = "",
-                 code: str = "", verifikasi: bool = False) -> HasilGoogle:
+                 code: str = "", verifikasi: bool = False,
+                 id_token: str = "") -> HasilGoogle:
     """Login Google end-to-end: buka browser -> pilih akun -> dapat `ltoken`.
 
-    Kalau `code` sudah ada (mis. ditangkap manual dari URL), langkah browser
+    Kalau `code`/`id_token` sudah ada (mis. ditangkap manual), langkah browser
     dilewati dan langsung ditukar.
+
+    Urutan percobaan:
+      1. `id_token` (dari fragment hybrid flow) ->
+         POST /google/native/callback  [JALUR KLIEN ASLI]
+      2. `code` -> GET /google/callback?code&state  [cadangan]
     """
-    if not code:
-        url = url_login_google(state=state)
+    from .account import social_login  # noqa: PLC0415
+
+    if not code and not id_token:
+        url = url_login_google(state=state, hybrid=True)
         ambil = tangkap_code_dari_browser(url, batas=batas, tampilkan=tampilkan)
         if not ambil.ok:
             return HasilGoogle(False, message=ambil.message, url=url)
@@ -682,14 +744,31 @@ def login_google(batas: int = 300, tampilkan: bool = True, state: str = "",
             # JANGAN ditukar lagi (dulu inilah penyebab "Token is invalid").
             tukar = ambil
         else:
+            id_token = (ambil.details or {}).get("id_token", "")
             code = ambil.code
             state = (ambil.details or {}).get("state", "") or state
-            tukar = tukar_code_jadi_ltoken(code, state=state)
+            tukar = HasilGoogle(False, message="id_token tidak ada")
     else:
-        tukar = tukar_code_jadi_ltoken(code, state=state)
-    if not tukar.ok:
-        return tukar
+        tukar = HasilGoogle(False, message="belum ditukar")
 
+    if tukar.ok and tukar.token:
+        hasil = tukar
+    elif id_token:
+        res = social_login(id_token, "google")
+        if not res.ok:
+            return HasilGoogle(False, url=tukar.url, message=res.message,
+                               details=getattr(res, "details", {}) or {})
+        hasil = HasilGoogle(True, token=res.token, url=tukar.url,
+                            message=res.message or "login Google berhasil",
+                            details={"cara": "google/native/callback"})
+    elif code:
+        hasil = tukar_code_jadi_ltoken(code, state=state)
+        if not hasil.ok:
+            return hasil
+    else:
+        return HasilGoogle(False, message="id_token dan code tidak didapat")
+
+    tukar = hasil
     if verifikasi:
         try:
             from .account import check_token  # noqa: PLC0415

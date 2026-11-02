@@ -319,6 +319,12 @@ class Bot:
         self._last_ping_ts = 0.0
         self._connected_at = 0.0
         self._action_log: collections.deque[str] = collections.deque(maxlen=200)
+        # Fitur otomasi (autofarm/autocollect/spammer/path/autodrop).
+        # Import di dalam fungsi supaya tidak ada impor melingkar:
+        # features.py mengimpor Bot dari modul ini.
+        from .features import FiturBot  # noqa: PLC0415
+
+        self.fitur = FiturBot(self)
 
     # ------------------------------------------------------------------ #
     # Info
@@ -453,6 +459,12 @@ class Bot:
 
     def disconnect(self) -> None:
         self._stop.set()
+        # Hentikan dulu semua loop fitur — kalau tidak, autofarm masih
+        # memanggil hit() saat host sudah ditutup.
+        try:
+            self.fitur.stop_semua()
+        except Exception:  # noqa: BLE001
+            pass
         if self.host:
             try:
                 self.host.disconnect(graceful=False)
@@ -846,7 +858,19 @@ class Bot:
     # AKSI — semuanya mengirim paket nyata ke server
     # ------------------------------------------------------------------ #
     def say(self, text: str) -> bool:
-        """Kirim pesan ke dunia."""
+        """Kirim pesan ke dunia.
+
+        Teks yang diawali `/` dicoba dulu sebagai perintah lokal gaya deltaX
+        (`/warp`, `/gscan`, `/help`, …). Kalau dikenali, pesan TIDAK dikirim
+        ke server dan return True.
+        """
+        cmds = getattr(getattr(self, "fitur", None), "commands", None)
+        if cmds is not None and str(text).strip().startswith("/"):
+            try:
+                if cmds.handle(text):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
         self._emit("say", text)
         return self.send_text(M.GenericText, f"action|input\n|text|{text}\n".encode())
 

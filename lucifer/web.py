@@ -18,6 +18,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from .runner import Runner, RunnerConfig
 
@@ -229,6 +230,46 @@ PAGE = r"""<!DOCTYPE html>
   </section>
 
   <section class="card" style="grid-column:1/-1">
+    <h2>Peta Dunia</h2>
+    <div class="btnrow" style="margin-bottom:8px">
+      <button class="ghost mini" onclick="muatPeta()">Muat peta</button>
+      <span class="hint" id="peta-info">—</span>
+    </div>
+    <canvas id="peta" width="640" height="640"
+            style="width:100%;max-width:640px;image-rendering:pixelated;background:#111;border-radius:8px;border:1px solid var(--line)"></canvas>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
+    <h2>Fitur Otomasi (deltaX)</h2>
+    <div class="grid" id="fitur-grid"><span style="color:var(--dim)">memuat…</span></div>
+    <div class="btnrow" style="margin-top:10px">
+      <button class="ghost mini" onclick="fitur('replay','record')">Rekam</button>
+      <button class="ghost mini" onclick="fitur('replay','stop')">Stop rekam</button>
+      <button class="ghost mini" onclick="fitur('replay','play')">Putar</button>
+      <button class="ghost mini" onclick="fitur('replay','save')">Simpan</button>
+      <button class="ghost mini" onclick="growscan()">Growscan</button>
+      <button class="danger mini" onclick="fitur('stop_all','stop')">Stop semua</button>
+    </div>
+    <pre id="scanout" style="margin-top:8px;color:var(--dim)">—</pre>
+    <div class="hint" style="margin-top:8px">
+      Fitur berbasis paket saja. ESP/noclip/ghost/visual inventory tidak mungkin di klien bot.
+    </div>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
+    <h2>Skrip Lua</h2>
+    <div class="btnrow" style="margin-bottom:8px">
+      <input id="skrip-nama" placeholder="nama.lua" style="flex:0 0 200px">
+      <button class="ghost mini" onclick="simpanSkrip()">Simpan</button>
+      <button class="ghost mini" onclick="jalankanSkrip()">Jalankan</button>
+      <span class="hint" id="skrip-out">—</span>
+    </div>
+    <textarea id="skrip-isi" spellcheck="false"
+      style="width:100%;min-height:180px;font-family:ui-monospace,monospace;font-size:12px;background:#1b1d20;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:10px"
+      placeholder="-- tulis skrip Lucifer di sini"></textarea>
+  </section>
+
+  <section class="card" style="grid-column:1/-1">
     <h2>Log</h2>
     <pre id="logs">memuat…</pre>
   </section>
@@ -326,7 +367,7 @@ async function send(cmd){
 }
 
 function sendCmd(c){
-  send(c);
+  return send(c);
 }
 
 function warpWorld(){
@@ -508,6 +549,112 @@ load();
 loadAkun();
 setInterval(load, 3000);
 setInterval(loadAkun, 10000);
+
+/* ---------- Fitur otomasi (deltaX) ---------- */
+let fiturTerakhir = null;
+
+function warnaItem(id){
+  // hash warna stabil per id supaya peta kebaca tanpa perlu sprite items.dat
+  let h = (id * 2654435761) % 360;
+  return `hsl(${h} 55% ${id===0?14:42}%)`;
+}
+
+async function muatFitur(){
+  const r = await fetch('/api/features');
+  const d = await r.json();
+  fiturTerakhir = d;
+  if(!d.ok){
+    $('fitur-grid').innerHTML = `<span class="hint">${d.error||'tidak tersedia'}</span>`;
+    return;
+  }
+  const s = d.status;
+  const baris = [['autofarm','AutoFarm', s.autofarm.aktif, `${s.autofarm.siap_panen} siap panen · ${s.autofarm.kosong} kosong`],
+    ['autocollect','AutoCollect', s.autocollect.aktif, `${s.autocollect.objek_dunia} objek · ${s.autocollect.diambil} diambil`],
+    ['spammer','Spammer', s.spammer.aktif, `${s.spammer.jumlah_teks} teks · ${s.spammer.terkirim} terkirim`],
+    ['autodrop','AutoDrop', s.autodrop.aktif, `mode ${s.autodrop.mode} · min ${s.autodrop.minimum}`],
+    ['replay','Replay', s.replay.memutar, s.replay.merekam ? 'sedang merekam' : `${s.replay.aksi} aksi · ${s.replay.berkas.length} berkas`]];
+  $('fitur-grid').innerHTML = baris.map(([k,nama,aktif,ket])=>`
+    <div class="kpi">
+      <b style="color:${aktif?'var(--ok)':'var(--dim)'}">${nama}</b>
+      <small>${ket}</small>
+      <div style="margin-top:6px">
+        <button class="ghost mini" onclick="fitur('${k}','${aktif?'stop':'start'}')">${aktif?'Stop':'Start'}</button>
+      </div>
+    </div>`).join('');
+}
+
+async function fitur(feature, action){
+  const body = {feature, action, label: (fiturTerakhir&&fiturTerakhir.label)||''};
+  if(feature==='autofarm' && action==='start'){
+    const seed = prompt('ID bibit untuk ditanam (kosongkan = hanya panen):','');
+    if(seed) body.opts = {seed_id: parseInt(seed,10)||0};
+  }
+  if(feature==='spammer' && action==='start'){
+    const teks = prompt('Teks spam (pisahkan dengan | ):','halo');
+    if(!teks) return;
+    body.opts = {texts: teks.split('|').map(t=>t.trim()).filter(Boolean)};
+  }
+  const r = await fetch('/api/feature', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if(d.scan) $('scanout').textContent = JSON.stringify(d.scan, null, 1);
+  if(!d.ok && !d.scan) alert(d.error||'gagal');
+  muatFitur();
+}
+
+async function growscan(){
+  const r = await fetch('/api/feature', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({feature:'growscan', action:'scan', label:(fiturTerakhir&&fiturTerakhir.label)||''})});
+  const d = await r.json();
+  $('scanout').textContent = d.scan ? JSON.stringify(d.scan, null, 1) : (d.error||'gagal');
+}
+
+/* ---------- Peta dunia ---------- */
+async function muatPeta(){
+  const r = await fetch('/api/map');
+  const d = await r.json();
+  const cv = $('peta'), cx = cv.getContext('2d');
+  if(!d.ok){ $('peta-info').textContent = d.error||'tidak tersedia'; cx.clearRect(0,0,cv.width,cv.height); return; }
+  const n = Math.max(d.w, d.h) || 1;
+  const skala = Math.floor(Math.min(cv.width, cv.height) / n) || 1;
+  cv.width = cv.height = skala * n;
+  cx.fillStyle = '#0d0f11'; cx.fillRect(0,0,cv.width,cv.height);
+  for(const t of d.tiles){
+    cx.fillStyle = warnaItem(t.bg || t.fg);
+    cx.fillRect(t.x*skala, t.y*skala, skala, skala);
+    if(t.fg){
+      cx.fillStyle = warnaItem(t.fg);
+      cx.fillRect(t.x*skala+1, t.y*skala+1, skala-2, skala-2);
+    }
+    if(t.ready){ cx.fillStyle='#ffd166'; cx.fillRect(t.x*skala+skala-3, t.y*skala, 3, 3); }
+  }
+  for(const p of d.players){
+    cx.fillStyle = p.local ? '#00e676' : '#ff5252';
+    cx.fillRect(p.x*skala, p.y*skala, Math.max(3,skala), Math.max(3,skala));
+  }
+  $('peta-info').textContent = `${d.world||'(tanpa nama)'} ${d.w}×${d.h} · ${d.tiles.length} tile · ${d.players.length} pemain · ${d.dropped} objek`;
+}
+
+/* ---------- Skrip ---------- */
+async function simpanSkrip(){
+  const name = $('skrip-nama').value.trim();
+  const content = $('skrip-isi').value;
+  if(!name){ alert('isi nama file dulu, misal farm.lua'); return; }
+  const r = await fetch('/api/script/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name, content})});
+  const d = await r.json();
+  $('skrip-out').textContent = d.ok ? `tersimpan: ${d.name} (${d.bytes} byte)` : (d.error||'gagal');
+}
+
+async function jalankanSkrip(){
+  const name = $('skrip-nama').value.trim();
+  if(!name){ alert('isi nama file dulu'); return; }
+  await sendCmd('run ' + name);
+  $('skrip-out').textContent = 'dijalankan: ' + name;
+}
+
+muatFitur();
+muatPeta();
+setInterval(muatFitur, 5000);
+setInterval(muatPeta, 8000);
 </script>
 </body>
 </html>
@@ -522,6 +669,58 @@ class Handler(BaseHTTPRequestHandler):
         log.debug("%s - %s", self.address_string(), fmt % args)
 
     # -- util -------------------------------------------------------------- #
+    def _query(self) -> dict[str, str]:
+        q = {}
+        if "?" in self.path:
+            for part in self.path.split("?", 1)[1].split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    q[unquote(k)] = unquote(v)
+                elif part:
+                    q[part] = ""
+        return q
+
+    def _bot(self, label: str = ""):
+        """Ambil bot dari engine; tanpa label pakai bot pertama (atau parent)."""
+        if not self.runner or self.runner.engine is None:
+            return None
+        bots = self.runner.engine.bots
+        if label:
+            return bots.get(label)
+        return self.runner.engine.parent or (next(iter(bots.values())) if bots else None)
+
+    def _fitur_snapshot(self) -> dict:
+        bot = self._bot()
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+        from .features import TILE_MENU  # noqa: PLC0415
+
+        return {"ok": True, "label": bot.label, "status": bot.fitur.status(),
+                "menu": TILE_MENU, "bot": bot.stats()}
+
+    def _peta(self, label: str) -> dict:
+        """Peta dunia siap-render: hanya tile tak-kosong supaya payload kecil."""
+        bot = self._bot(label)
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+        w = bot.world
+        db = bot.items_db
+        tiles = []
+        for t in w.tiles:
+            if t.fg == 0 and t.bg == 0:
+                continue
+            tiles.append({
+                "x": t.x, "y": t.y, "fg": t.fg, "bg": t.bg,
+                "flags": t.flags, "seed": t.is_seed, "ready": t.ready,
+                "name": db.name_of(t.fg) if db else str(t.fg),
+            })
+        pemain = [{"x": p.tile_x, "y": p.tile_y, "name": p.name, "local": p is bot.local}
+                  for p in bot.players.values()]
+        return {"ok": True, "label": bot.label, "world": w.name,
+                "w": w.width, "h": w.height, "tiles": tiles,
+                "players": pemain, "dropped": len(w.dropped)}
+
+    # -- util -------------------------------------------------------------- #
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
@@ -532,6 +731,94 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False, default=str).encode())
+
+    def _terapkan_fitur(self, payload: dict) -> dict:
+        """Nyalakan/matikan satu fitur otomasi dari dashboard.
+
+        Body: {"label":"main","feature":"autofarm","action":"start"|"stop",
+               "opts":{...}}
+        """
+        bot = self._bot(str(payload.get("label") or ""))
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+        nama = str(payload.get("feature") or "").strip()
+        aksi = str(payload.get("action") or "start").strip()
+        opts = payload.get("opts") or {}
+        if not isinstance(opts, dict):
+            opts = {}
+
+        fb = bot.fitur
+        peta = {
+            "autofarm": fb.autofarm,
+            "autocollect": fb.autocollect,
+            "spammer": fb.spammer,
+            "autodrop": fb.autodrop,
+            "replay": fb.replay,
+        }
+        if nama == "stop_all":
+            fb.stop_semua()
+            return {"ok": True, "status": fb.status()}
+        if nama == "growscan":
+            return {"ok": True, "scan": fb.growscan.scan()}
+        if nama == "command":
+            teks = str(payload.get("text") or "")
+            ditangani = fb.commands.handle(teks)
+            return {"ok": ditangani, "text": teks,
+                    "console": bot.console.contents[-5:]}
+
+        obj = peta.get(nama)
+        if obj is None:
+            return {"ok": False, "error": f"fitur '{nama}' tidak dikenal"}
+
+        # terapkan opsi (nama field deltaX dipakai apa adanya)
+        for k, v in opts.items():
+            if k == "seed_id":
+                fb.autofarm.seed_id = int(v or 0)
+            elif k == "tiles":
+                fb.autofarm.set_tiles(v)
+            elif k == "texts":
+                for t in (v if isinstance(v, list) else [v]):
+                    fb.spammer.tambah(t)
+            elif k == "radius":
+                obj.radius = int(v or 3)
+            elif k == "delay":
+                if hasattr(obj, "delay"):
+                    obj.delay = int(v or 1000)
+            elif k == "minimum":
+                fb.autodrop.minimum = int(v or 0)
+            elif k == "mode":
+                fb.autodrop.mode = str(v)
+            elif k == "file":
+                pass  # ditangani khusus per fitur di bawah
+            elif hasattr(obj, k):
+                setattr(obj, k, v)
+
+        if nama == "replay":
+            try:
+                if aksi == "stop":
+                    fb.replay.stop()
+                elif aksi == "save":
+                    fb.replay.simpan(str(opts.get("file") or "rekaman.json"))
+                elif aksi == "load":
+                    fb.replay.muat(str(opts.get("file") or "rekaman.json"))
+                elif aksi == "play":
+                    fb.replay.putar(bool(opts.get("loop", False)))
+                elif aksi == "clear":
+                    fb.replay.bersihkan()
+                else:
+                    fb.replay.mulai_rekam()
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": str(e), "status": fb.status()}
+            return {"ok": True, "label": bot.label, "status": fb.status()}
+
+        if aksi == "stop":
+            obj.stop()
+        else:
+            try:
+                obj.start()
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": str(e), "status": fb.status()}
+        return {"ok": True, "label": bot.label, "status": fb.status()}
 
     # -- routes ------------------------------------------------------------ #
     def do_GET(self):  # noqa: N802
@@ -561,6 +848,10 @@ class Handler(BaseHTTPRequestHandler):
                             "content": isi[:8000],
                         })
             self._json({"scripts": scripts})
+        elif path == "/api/features":
+            self._json(self._fitur_snapshot())
+        elif path == "/api/map":
+            self._json(self._peta(self._query().get("label", "")))
         elif path == "/api/logs":
             self._json({"logs": self.runner.logs() if self.runner else []})
         elif path == "/health":
@@ -571,7 +862,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         path = self.path.split("?")[0]
         if path not in ("/api/command", "/api/login", "/api/login/hp",
-                        "/api/account/delete",
+                        "/api/account/delete", "/api/feature",
+                        "/api/script/save",
                         "/api/connect", "/api/disconnect"):
             self._json({"error": "tidak ditemukan"}, 404)
             return
@@ -620,6 +912,20 @@ class Handler(BaseHTTPRequestHandler):
 
             elif path == "/api/account/delete":
                 self._json(self.runner.hapus_akun(str(payload.get("label") or "")))
+
+            elif path == "/api/feature":
+                self._json(self._terapkan_fitur(payload))
+
+            elif path == "/api/script/save":
+                nama = str(payload.get("name") or "").strip()
+                isi = str(payload.get("content") or "")
+                if not nama.endswith(".lua") or "/" in nama or "\\" in nama:
+                    self._json({"ok": False, "error": "nama skrip harus *.lua tanpa path"})
+                    return
+                d = Path(self.runner.config.scripts_dir)
+                d.mkdir(parents=True, exist_ok=True)
+                (d / nama).write_text(isi, encoding="utf-8")
+                self._json({"ok": True, "name": nama, "bytes": len(isi.encode())})
 
             elif path == "/api/connect":
                 self._json(self.runner.connect_bot(str(payload.get("label") or "")))

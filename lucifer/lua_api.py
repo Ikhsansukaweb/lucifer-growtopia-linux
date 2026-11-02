@@ -528,6 +528,64 @@ class LuaEngine:
         g.RTVAR = self._class_rtvar()
         g.Vector2 = self._class_vector("2")
         g.Vector3 = self._class_vector("3")
+        self._register_features(g)
+
+    # ------------------------------------------------------------------ #
+    # Fitur otomasi gaya deltaX
+    # ------------------------------------------------------------------ #
+    def _register_features(self, g) -> None:
+        """Pasang fungsi fitur (autofarm/autocollect/spammer/...) ke tabel Lua.
+
+        Nama fungsi sengaja mengikuti alias `assets/menu.json` deltaX supaya
+        skrip Lucifer dan daftar fitur deltaX bisa dicocokkan satu-satu.
+        Setiap fungsi menerima `bot=` opsional untuk multi-akun.
+        """
+
+        def fitur(bot=None):
+            b = self._resolve_bot(bot)
+            return b.fitur if b is not None else None
+
+        def bungkus(nama: str):
+            """Pembungkus yang meneruskan bot= ke FiturBot yang benar."""
+
+            def luar(*args, **kw):
+                label = kw.pop("bot", None)
+                if nama == "features_menu":
+                    from .features import TILE_MENU  # noqa: PLC0415
+
+                    return dict(TILE_MENU)
+                fb = fitur(label)
+                if fb is None:
+                    raise RuntimeError(
+                        "belum ada bot — tambahkan akun dulu "
+                        "(lihat README: Login GrowID / Login Google)")
+                fn = fb.lua_api().get(nama)
+                if fn is None:
+                    raise RuntimeError(f"fitur '{nama}' tidak tersedia di bot ini")
+                return fn(*args)
+
+            return luar
+
+        from .features import SEMUA_ALIAS  # noqa: PLC0415
+
+        tambahan = (
+            "autofarm_stop", "autofarm_status", "autofarm_set_tiles",
+            "autofarm_set_seed", "autofarm_step",
+            "autocollect_stop", "autocollect_status", "autocollect_set_radius",
+            "spammer_stop", "spammer_status", "spammer_add", "spammer_clear",
+            "spammer_set_delay",
+            "findpath_to", "findpath_find", "findpath_item",
+            "findpath_set_blockjump", "findpath_set_teleport",
+            "autodrop_start", "autodrop_stop", "autodrop_status",
+            "autodrop_set_mode", "autodrop_set_minimum",
+            "replay_record_start", "replay_record_stop", "replay_play_start",
+            "replay_stop", "replay_clear", "replay_save", "replay_load",
+            "replay_files", "replay_status",
+            "growscan", "command", "command_status",
+            "features_stop_all", "features_status", "features_menu",
+        )
+        for nama in tuple(SEMUA_ALIAS) + tambahan:
+            g[nama] = bungkus(nama)
 
     # ------------------------------------------------------------------ #
     # Implementasi API: dasar
@@ -1994,6 +2052,7 @@ class _ThreadEngine:
         g.RTVAR = p._class_rtvar()
         g.Vector2 = p._class_vector("2")
         g.Vector3 = p._class_vector("3")
+        p._register_features(g)
 
     def call(self, name: str, *args) -> bool:
         """Muat ulang semua skrip lalu panggil fungsi global `name`."""

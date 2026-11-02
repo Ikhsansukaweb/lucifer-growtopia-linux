@@ -332,6 +332,63 @@ def growid_login(
     s = requests.Session()
     s.headers.update({"User-Agent": GAME_UA})
 
+    # -- strategi 0: halaman login + CSRF (SATU-SATUNYA yang diterima) ------ #
+    # Server GT memakai Laravel: POST tanpa header `X-XSRF-TOKEN` dibalas 419
+    # "CSRF token mismatch". Cookie XSRF-TOKEN di-set oleh GET halaman login,
+    # nilainya harus di-URL-decode lalu dikirim balik sebagai header.
+    # Diuji: dengan header ini balasannya 422 "Account credentials mismatched."
+    # (artinya server SUDAH memproses kredensial) — tanpa header: 419.
+    try:
+        h = s.get(f"{LOGIN_HOST}/player/growid/login", timeout=timeout)
+        tried.append(f"csrf: GET login page HTTP {h.status_code}")
+        xsrf = urllib.parse.unquote(s.cookies.get("XSRF-TOKEN", ""))
+        if xsrf:
+            r = s.post(
+                f"{LOGIN_HOST}/player/growid/login/validate",
+                data={"_token": "", "growId": username, "password": password,
+                      "type": "log"},
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-XSRF-TOKEN": xsrf,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": LOGIN_HOST,
+                    "Referer": f"{LOGIN_HOST}/player/growid/login",
+                    "Accept": "application/json, text/plain, */*",
+                },
+                timeout=timeout,
+            )
+            tried.append(f"csrf: POST validate HTTP {r.status_code}")
+            if r.status_code == 422:
+                # Server SUDAH memproses kredensial -> sandi/nama salah.
+                # Ini bukan kegagalan alur: jangan lanjut ke strategi lain
+                # (tiap percobaan mengurangi kuota "attempt(s) left").
+                try:
+                    j = json.loads(r.text)
+                except ValueError:
+                    j = {}
+                msg = str(j.get("message") or "kredensial salah")
+                return LoginResult(
+                    False, "growid",
+                    message=f"Login GrowID ditolak server: {msg}",
+                    raw=r.text[:300], details={"how": "csrf", "dicoba": tried},
+                )
+            if r.status_code == 200 and r.text.lstrip().startswith("<"):
+                # Halaman HTML (bukan JSON) = captcha / throttle / blokir.
+                return LoginResult(
+                    False, "growid",
+                    message=("Server membalas halaman HTML, bukan JSON — biasanya "
+                             "captcha atau terlalu banyak percobaan. Tunggu "
+                             "beberapa menit lalu coba lagi."),
+                    raw=r.text[:200], details={"how": "csrf", "dicoba": tried},
+                )
+            res = _finish(r.text, "csrf")
+            if res.ok:
+                return res
+        else:
+            tried.append("csrf: cookie XSRF-TOKEN tidak ada")
+    except Exception as e:  # noqa: BLE001
+        tried.append(f"csrf: {type(e).__name__}: {e}")
+
     # -- strategi 1 & 2 ----------------------------------------------------- #
     for label, body in (
         ("client_data", client_data),
@@ -434,29 +491,42 @@ def social_login(
       1. Pemain login ke Google di sisi kita (browser/HP) -> dapat
          `id_token` (OpenID Connect) atau `serverAuthCode`.
       2. Token itu dikirim ke endpoint sosial Growtopia:
-             POST /player/social/login?social_login=<google|apple|ubisoft>
+             POST /google/native/callback   (body: token=<id_token>)
          Server menukarnya dan membalas JSON berisi `token` (= ltoken).
       3. `ltoken` itulah yang dipakai di paket login ENet (lihat
          Account.login_payload) — bukan email/password.
 
-    Catatan jujur: Growtopia TIDAK menyediakan OAuth client_id publik untuk
-    pihak ketiga, dan Google memblokir login otomatis (anti-bot). Jadi langkah
-    1 harus dilakukan MANUSIA sekali di browser; setelah itu `ltoken` bisa
-    dipakai ulang dan disegarkan lewat tokenUrl (tanpa login Google lagi).
+    Endpoint ditemukan dari string di `libgrowtopia.so`:
+        `google/native/callback`  — dipakai klien asli untuk menerima
+        id_token dari GoogleSignInHelper (`notifyValueChanged(5,
+        "google_idtoken", <id_token>, false)`).
+
+    Diuji langsung (2026-11-02):
+        POST /google/native/callback  token=FAKE  -> 302 -> validate JSON
+        POST /player/social/login                 -> 405 (POST tidak didukung)
+        GET  /player/social/login?...             -> redirect dashboard (salah)
     """
     requests = _requests()
-    client_data = build_client_data(protocol, version, meta)
     tried: list[str] = []
     s = requests.Session()
     s.headers.update({"User-Agent": GAME_UA})
 
-    url = f"{LOGIN_HOST}/player/social/login"
-    # Beberapa bentuk body dicoba karena format bisa berubah antar versi klien.
-    bodies = [
-        {"social_login": social, "token": social_token, "id_token": social_token},
-        {"social_login": social, "social_token": social_token},
-        f"social_login={social}&token={urllib.parse.quote(social_token, safe='')}",
-    ]
+    # Endpoint per jenis penyedia. `google/native/callback` menerima
+    # `token=<id_token>`; endpoint lama /player/social/login hanya GET.
+    if social == "google":
+        url = f"{LOGIN_HOST}/google/native/callback"
+        bodies = [
+            {"token": social_token, "valKey": DASHBOARD_VALKEY},
+            {"token": social_token},
+            {"id_token": social_token, "valKey": DASHBOARD_VALKEY},
+        ]
+    else:
+        url = f"{LOGIN_HOST}/player/social/login"
+        bodies = [
+            {"social_login": social, "token": social_token, "id_token": social_token},
+            {"social_login": social, "social_token": social_token},
+        ]
+
     for i, body in enumerate(bodies, 1):
         try:
             r = s.post(
@@ -464,7 +534,6 @@ def social_login(
                 data=body,
                 headers={
                     "Content-Type": "application/x-www-form-urlencoded",
-                    "X-Requested-With": "XMLHttpRequest",
                     "Accept": "application/json, text/plain, */*",
                 },
                 timeout=timeout,
@@ -473,6 +542,8 @@ def social_login(
             tried.append(f"body#{i}: HTTP {r.status_code} len={len(r.text)}")
             loc = r.headers.get("Location", "")
             if loc:
+                if not loc.startswith("http"):
+                    loc = LOGIN_HOST + loc
                 g = s.get(loc, timeout=timeout)
                 tried.append(f"body#{i}: GET redirect HTTP {g.status_code}")
                 r = g
