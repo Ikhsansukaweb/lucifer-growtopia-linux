@@ -861,6 +861,89 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "error": str(e), "status": fb.status()}
         return {"ok": True, "label": bot.label, "status": fb.status()}
 
+    def _pool(self):
+        """ProxyPool per-runner (dibuat sekali, disimpan di runner)."""
+        from .proxypool import ProxyPool  # noqa: PLC0415
+
+        pool = getattr(self.runner, "_proxy_pool", None)
+        if pool is None:
+            pool = ProxyPool(Path(self.runner.config.data_dir or "data") / "proxies.json")
+            self.runner._proxy_pool = pool
+        return pool
+
+    def _cari_item(self, q: dict[str, str]) -> dict:
+        """Cari item berdasarkan id atau nama (untuk item picker GUI)."""
+        db = self.runner.items_db if self.runner else None
+        if db is None:
+            return {"ok": False, "error": "items.dat belum dimuat"}
+
+        teks = (q.get("q") or "").strip()
+        batas = max(1, min(int(q.get("limit") or 40), 200))
+        hasil: list[dict] = []
+
+        if teks.isdigit():
+            it = db.get(int(teks))
+            if it:
+                hasil.append(_ringkas_item(it))
+        elif teks:
+            for it in db.find(teks)[:batas]:
+                hasil.append(_ringkas_item(it))
+        else:
+            for i in range(1, min(batas, len(db.items))):
+                it = db.get(i)
+                if it:
+                    hasil.append(_ringkas_item(it))
+
+        return {"ok": True, "total": len(db), "items": hasil}
+
+    def _inventori(self, label: str = "") -> dict:
+        """Isi inventaris satu bot, sudah dilengkapi nama item."""
+        bot = self._bot(label)
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot"}
+        db = getattr(bot, "items_db", None) or (self.runner.items_db if self.runner else None)
+        isi = []
+        for it in bot.inventory.items.values():
+            nama = db.name_of(it.id) if db else ""
+            isi.append({
+                "id": it.id,
+                "name": nama,
+                "count": it.count,
+                "active": bool(it.isActive),
+            })
+        isi.sort(key=lambda x: (-x["count"], x["id"]))
+        return {"ok": True, "label": bot.label,
+                "slots": len(isi), "items": isi[:400]}
+
+    def _switch_snapshot(self) -> dict:
+        """Ringkasan untuk tab Switch: fitur apa saja yang bisa dinyalakan."""
+        bot = self._bot()
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot"}
+        fb = bot.fitur
+        saklar = {
+            "autofarm": getattr(fb.autofarm, "aktif", False),
+            "autocollect": getattr(fb.autocollect, "aktif", False),
+            "spammer": getattr(fb.spammer, "aktif", False),
+            "autodrop": getattr(fb.autodrop, "aktif", False),
+            "pathfinder": getattr(fb.path, "aktif", False),
+            "replay": getattr(fb.replay, "aktif", False),
+        }
+        return {"ok": True, "label": bot.label, "switch": saklar,
+                "status": fb.status()}
+
+    def _baca_skrip(self, nama: str) -> dict:
+        nama = (nama or "").strip()
+        if not nama.endswith(".lua") or "/" in nama or "\\" in nama:
+            return {"ok": False, "error": "nama skrip harus *.lua tanpa path"}
+        for folder in (self.runner.config.scripts_dir, self.runner.config.examples_dir):
+            f = Path(folder) / nama
+            if f.exists():
+                return {"ok": True, "name": nama, "folder": folder,
+                        "content": f.read_text(encoding="utf-8", errors="replace"),
+                        "lines": len(f.read_text(encoding="utf-8", errors="replace").splitlines())}
+        return {"ok": False, "error": f"skrip '{nama}' tidak ditemukan"}
+
     # -- routes ------------------------------------------------------------ #
     def do_GET(self):  # noqa: N802
         path = self.path.split("?")[0]
@@ -895,6 +978,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._peta(self._query().get("label", "")))
         elif path == "/api/logs":
             self._json({"logs": self.runner.logs() if self.runner else []})
+        elif path == "/api/items":
+            self._json(self._cari_item(self._query()))
+        elif path == "/api/script":
+            self._json(self._baca_skrip(self._query().get("name", "")))
+        elif path == "/api/proxies":
+            if not self.runner:
+                self._json({"ok": False, "error": "runner belum siap"})
+                return
+            self._json({"ok": True, "proxies": self._pool().daftar()})
+        elif path == "/api/inventory":
+            self._json(self._inventori(self._query().get("label", "")))
+        elif path == "/api/switch":
+            self._json(self._switch_snapshot())
+        elif path == "/api/features/schema":
+            from .features import TILE_MENU  # noqa: PLC0415
+
+            self._json({"ok": True, "menu": TILE_MENU})
         elif path == "/health":
             self._json({"ok": True, "running": bool(self.runner and not self.runner._stop.is_set())})
         else:
@@ -904,7 +1004,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path not in ("/api/command", "/api/login", "/api/login/hp",
                         "/api/account/delete", "/api/feature",
-                        "/api/script/save", "/api/proxy",
+                        "/api/script/save", "/api/script/delete",
+                        "/api/bot/switch", "/api/proxy", "/api/proxies",
                         "/api/connect", "/api/disconnect"):
             self._json({"error": "tidak ditemukan"}, 404)
             return
@@ -955,6 +1056,32 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/account/delete":
                 self._json(self.runner.hapus_akun(str(payload.get("label") or "")))
 
+            elif path == "/api/proxies":
+                aksi = str(payload.get("action") or "tambah").strip()
+                pool = self._pool()
+                if aksi == "tambah":
+                    hasil = pool.tambah(str(payload.get("text") or ""))
+                elif aksi == "hapus":
+                    hasil = pool.hapus(str(payload.get("host") or ""),
+                                       payload.get("port") or 0)
+                elif aksi == "hapus_gagal":
+                    hasil = pool.hapus_gagal()
+                elif aksi == "cek":
+                    hasil = pool.cek(int(payload.get("batas") or 0))
+                elif aksi == "pakai":
+                    url = pool.pilih(str(payload.get("host") or ""),
+                                     payload.get("port") or 0)
+                    if not url:
+                        hasil = {"ok": False, "error": "proxy tidak ada di pool"}
+                    else:
+                        hasil = self.runner.atur_proxy(
+                            str(payload.get("label") or ""), url)
+                        hasil["proxy"] = url
+                else:
+                    hasil = {"ok": False, "error": f"aksi '{aksi}' tidak dikenal"}
+                hasil["proxies"] = pool.daftar()
+                self._json(hasil)
+
             elif path == "/api/proxy":
                 # {label, proxy} -> set/hapus; {proxy} tanpa label -> uji saja
                 label = str(payload.get("label") or "").strip()
@@ -976,6 +1103,29 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/feature":
                 self._json(self._terapkan_fitur(payload))
 
+            elif path == "/api/script/delete":
+                nama = str(payload.get("name") or "").strip()
+                if not nama.endswith(".lua") or "/" in nama or "\\" in nama:
+                    self._json({"ok": False, "error": "nama skrip harus *.lua tanpa path"})
+                    return
+                hapus = 0
+                for folder in (self.runner.config.scripts_dir,
+                               self.runner.config.examples_dir):
+                    f = Path(folder) / nama
+                    if f.exists():
+                        f.unlink()
+                        hapus += 1
+                self._json({"ok": hapus > 0, "dihapus": hapus, "name": nama})
+
+            elif path == "/api/bot/switch":
+                # Pilih bot aktif untuk dashboard (multi-akun).
+                label = str(payload.get("label") or "").strip()
+                if self.runner.engine and label in self.runner.engine.bots:
+                    self.runner.engine.parent = self.runner.engine.bots[label]
+                    self._json({"ok": True, "aktif": label})
+                else:
+                    self._json({"ok": False, "error": f"bot '{label}' tidak ada"})
+
             elif path == "/api/script/save":
                 nama = str(payload.get("name") or "").strip()
                 isi = str(payload.get("content") or "")
@@ -995,6 +1145,20 @@ class Handler(BaseHTTPRequestHandler):
 
         except Exception as e:  # noqa: BLE001
             self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+
+
+def _ringkas_item(it) -> dict:
+    """Bentuk ringkas item untuk GUI (tidak membawa seluruh field engine)."""
+    return {
+        "id": it.id,
+        "name": it.name,
+        "rarity": it.rarity,
+        "type": it.action_type,
+        "collision": it.collision_type,
+        "grow_time": it.grow_time,
+        "max_item": it.max_item,
+        "desc": (it.description or "")[:160],
+    }
 
 
 def create_server(
