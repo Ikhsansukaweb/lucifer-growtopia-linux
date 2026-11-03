@@ -536,22 +536,55 @@ class AutoCollect:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
         self.radius = 3
-        self.delay = 150          # ms
+        self.delay = 150          # ms jeda antar objek
+        self.jeda = 0.5           # detik jeda antar siklus
+        self.item_id = 0          # 0 = semua item
+        self.tiles: list[tuple[int, int]] = []   # kosong = semua tile
+        self.mode = "Radius"      # "Radius" | "Tile"
+        self.faster = True        # tanpa jeda antar objek
+        self.check = True         # cek objek masih ada sebelum diambil
         self.aktif = False
         self.total = 0
         self._s = _Siklus("autocollect")
 
     def sekali(self) -> int:
-        n = self.bot.collect(range_=self.radius, interval=self.delay)
+        # mode Tile = hanya objek yang jatuh di tile terpilih
+        pakai_tile = self.mode == "Tile" and bool(self.tiles)
+        if self.faster:
+            interval = 0
+        else:
+            interval = self.delay
+        if not self.item_id and not pakai_tile:
+            n = self.bot.collect(range_=self.radius, interval=interval)
+            self.total += n
+            return n
+        # filter: item tertentu dan/atau tile sasaran
+        n = 0
+        for d in list(self.bot.world.dropped):
+            if self.item_id and d.item_id != self.item_id:
+                continue
+            if pakai_tile:
+                tx, ty = int(d.x // 32), int(d.y // 32)
+                if (tx, ty) not in self.tiles:
+                    continue
+            elif not self.bot._in_range_px(d.x, d.y, self.radius):
+                continue
+            if self.check and not any(o.uid == d.uid for o in self.bot.world.dropped):
+                continue
+            self.bot.collectObject(d.uid)
+            n += 1
+            if interval:
+                time.sleep(interval / 1000.0)
         self.total += n
         return n
 
-    def start(self, jeda: float = 0.5) -> bool:
+    def start(self, jeda: float = 0) -> bool:
         if self._s.aktif:
             return True
         if self.bot.status != BotStatus.online:
             raise FeatureError("bot belum online — connect dulu")
         self._s = _Siklus("autocollect", aktif=True)
+        interval = float(jeda) if jeda else float(self.jeda)
 
         def loop() -> None:
             while not self._s._stop.is_set():
@@ -559,7 +592,7 @@ class AutoCollect:
                     self.sekali()
                 except Exception:  # noqa: BLE001
                     pass
-                if _tunggu(self._s._stop, jeda):
+                if _tunggu(self._s._stop, interval):
                     break
             self._s.aktif = False
             self.aktif = False
@@ -579,6 +612,9 @@ class AutoCollect:
 
     def info(self) -> dict[str, Any]:
         return {"aktif": self._s.aktif, "radius": self.radius,
+                "jeda": self.jeda, "item_id": self.item_id,
+                "mode": self.mode, "faster": self.faster, "check": self.check,
+                "tiles": [list(t) for t in self.tiles],
                 "diambil": self.total,
                 "objek_dunia": len(self.bot.world.dropped)}
 
@@ -681,6 +717,8 @@ class PathFinder:
         self.block_jump = True
         self.teleport_path = False
         self.jeda = 0.12
+        self.x = 0               # tujuan terakhir (dipakai GUI)
+        self.y = 0
 
     def bisa_dilewati(self, x: int, y: int) -> bool:
         w = self.bot.world
@@ -770,16 +808,35 @@ class AutoDrop:
         self.aktif = False
         self.minimum = 200
         self.mode = "drop"       # "drop" | "trash"
+        self.jeda = 2.0          # detik antar siklus
+        self.world = ""          # kosong = dunia sekarang
+        self.x = 0               # 0 = posisi sekarang
+        self.y = 0
         self.item_ids: list[int] = []
         self._s = _Siklus("autodrop")
         self.total = 0
 
-    def start(self, jeda: float = 2.0) -> bool:
+    def _pindah_ke_lokasi(self) -> None:
+        """Warp / geser ke titik buang bila diatur."""
+        b = self.bot
+        if self.world and b.world.name != self.world:
+            b.warp(self.world)
+            for _ in range(40):
+                if b.world.name == self.world:
+                    break
+                time.sleep(0.25)
+        if self.x or self.y:
+            if b.local and (b.local.tile_x != self.x or b.local.tile_y != self.y):
+                b.moveTile(self.x, self.y)
+                time.sleep(0.2)
+
+    def start(self, jeda: float = 0) -> bool:
         if self._s.aktif:
             return True
         if self.bot.status != BotStatus.online:
             raise FeatureError("bot belum online — connect dulu")
         self._s = _Siklus("autodrop", aktif=True)
+        interval = float(jeda) if jeda else float(self.jeda)
 
         def loop() -> None:
             while not self._s._stop.is_set():
@@ -787,7 +844,7 @@ class AutoDrop:
                     self._satu()
                 except Exception:  # noqa: BLE001
                     pass
-                if _tunggu(self._s._stop, jeda):
+                if _tunggu(self._s._stop, interval):
                     break
             self._s.aktif = False
             self.aktif = False
@@ -800,11 +857,16 @@ class AutoDrop:
     def _satu(self) -> int:
         inv = self.bot.inventory
         n = 0
+        pindah = bool(self.world) or bool(self.x) or bool(self.y)
+        sudah_pindah = False
         for item_id, it in list(inv.items.items()):
             if self.item_ids and item_id not in self.item_ids:
                 continue
             if it.count < self.minimum:
                 continue
+            if pindah and not sudah_pindah:
+                self._pindah_ke_lokasi()
+                sudah_pindah = True
             if self.mode == "trash":
                 self.bot.trash(item_id, it.count)
             else:
@@ -819,7 +881,9 @@ class AutoDrop:
 
     def info(self) -> dict[str, Any]:
         return {"aktif": self._s.aktif, "mode": self.mode,
-                "minimum": self.minimum, "dibuang": self.total}
+                "minimum": self.minimum, "jeda": self.jeda,
+                "world": self.world, "x": self.x, "y": self.y,
+                "dibuang": self.total}
 
 
 # --------------------------------------------------------------------------- #
@@ -849,6 +913,7 @@ class Replay:
         self.memutar = False
         self.loop = False
         self.custom_delay = 0          # ms; 0 = pakai tempo rekaman
+        self.file = "rekaman.json"     # berkas terakhir yang dipakai
         self.aksi: list[dict[str, Any]] = []
         self._t0 = 0.0
         self._asli: dict[str, Callable[..., Any]] = {}
@@ -894,14 +959,18 @@ class Replay:
         return len(self.aksi)
 
     # -- simpan / muat ---------------------------------------------------- #
-    def simpan(self, nama: str = "rekaman.json") -> str:
+    def simpan(self, nama: str = "") -> str:
         self.folder.mkdir(parents=True, exist_ok=True)
+        nama = nama or self.file or "rekaman.json"
+        self.file = nama
         nama = nama if nama.endswith(".json") else nama + ".json"
         p = self.folder / nama
         p.write_text(json.dumps(self.aksi, ensure_ascii=False, indent=1), encoding="utf-8")
         return str(p)
 
-    def muat(self, nama: str = "rekaman.json") -> int:
+    def muat(self, nama: str = "") -> int:
+        nama = nama or self.file or "rekaman.json"
+        self.file = nama
         nama = nama if nama.endswith(".json") else nama + ".json"
         p = self.folder / nama
         if not p.exists():
@@ -1302,3 +1371,131 @@ class FiturBot:
             "features_status": self.status,
             "features_menu": lambda: dict(TILE_MENU),
         }
+
+
+# --------------------------------------------------------------------------- #
+# Skema panel: satu sumber untuk GUI (kiri = kategori, kanan = pengaturan)
+# --------------------------------------------------------------------------- #
+# Tiap kategori punya daftar kontrol. GUI menggambar kontrol sesuai `tipe`:
+#   toggle  -> GtkSwitch
+#   angka   -> spin button
+#   teks    -> entry
+#   pilihan -> combo (nilai ada di `opsi`)
+#   item    -> entry ID item + pencarian nama
+#   tile    -> entry "x,y x,y"
+# Tiap kontrol menyebut `kunci` = nama atribut di objek fitur, jadi server
+# tidak perlu tahu nama tombol deltaX.
+SKEMA_FITUR: list[dict] = [
+    {
+        "nama": "Autofarm",
+        "kategori": "automation",
+        "fitur": "autofarm",
+        "keterangan": "panen → tanam → ambil, berulang di tile sasaran",
+        "kontrol": [
+            {"kunci": "seed_id", "label": "Bibit yang ditanam (ID)", "tipe": "item"},
+            {"kunci": "target_tiles", "label": "Tile sasaran", "tipe": "tile", "count": 5},
+            {"kunci": "do_break", "label": "Boleh memecah", "tipe": "toggle"},
+            {"kunci": "do_place", "label": "Boleh menanam", "tipe": "toggle"},
+            {"kunci": "verify", "label": "Cek tile siap panen", "tipe": "toggle"},
+            {"kunci": "verify_pos", "label": "Cek posisi pemain", "tipe": "toggle"},
+            {"kunci": "verify_delay", "label": "Jeda setelah teleport (ms)", "tipe": "angka", "min": 1000, "maks": 10000, "langkah": 100},
+            {"kunci": "punch_count", "label": "Hit count (pukulan per tile)", "tipe": "angka", "min": 1, "maks": 40, "langkah": 1},
+            {"kunci": "punch_delay", "label": "Delay break (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": "place_delay", "label": "Delay place (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": "siklus_delay", "label": "Jeda antar siklus (ms)", "tipe": "angka", "min": 0, "maks": 60000, "langkah": 100},
+            {"kunci": "faster", "label": "Overclock (potong jeda 40%)", "tipe": "toggle"},
+            {"kunci": "show_punch", "label": "Kirim semua pukulan tanpa jeda", "tipe": "toggle"},
+            {"kunci": "collect", "label": "Ambil objek saat memanen", "tipe": "toggle"},
+            {"kunci": "collect_delay", "label": "Jeda ambil (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": "collect_radius", "label": "Radius ambil", "tipe": "angka", "min": 1, "maks": 15, "langkah": 1},
+            {"kunci": "collect_block", "label": "Ikut ambil blok", "tipe": "toggle"},
+            {"kunci": "collect_seed", "label": "Ikut ambil bibit", "tipe": "toggle"},
+            {"kunci": "drop_aktif", "label": "Drop saat inventaris penuh", "tipe": "toggle"},
+            {"kunci": "drop_minimum", "label": "Minimum sebelum drop", "tipe": "angka", "min": 0, "maks": 40000, "langkah": 10},
+            {"kunci": "drop_x", "label": "Drop di X", "tipe": "angka", "min": 0, "maks": 200, "langkah": 1},
+            {"kunci": "drop_y", "label": "Drop di Y", "tipe": "angka", "min": 0, "maks": 200, "langkah": 1},
+            {"kunci": "drop_world", "label": "Dunia tujuan drop", "tipe": "teks"},
+            {"kunci": "drop_mode", "label": "Cara buang", "tipe": "pilihan", "opsi": ["drop", "trash"]},
+            {"kunci": "pick_aktif", "label": "Ambil item di dunia lain", "tipe": "toggle"},
+            {"kunci": "pick_world", "label": "Dunia sumber pick", "tipe": "teks"},
+            {"kunci": "pick_mode", "label": "Mode pick", "tipe": "pilihan", "opsi": ["nearest", "all"]},
+        ],
+    },
+    {
+        "nama": "Auto Collect",
+        "kategori": "collect",
+        "fitur": "autocollect",
+        "keterangan": "ambil objek jatuh di sekitar bot",
+        "kontrol": [
+            {"kunci": "mode", "label": "Mode ambil", "tipe": "pilihan", "opsi": ["Radius", "Tile"]},
+            {"kunci": "radius", "label": "Radius auto collect", "tipe": "angka", "min": 1, "maks": 11, "langkah": 1},
+            {"kunci": "tiles", "label": "Tile collect", "tipe": "tile", "count": 11},
+            {"kunci": "item_id", "label": "Hanya item ini (ID, 0 = semua)", "tipe": "item"},
+            {"kunci": "delay", "label": "Delay (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": "faster", "label": "Fast take", "tipe": "toggle"},
+            {"kunci": "check", "label": "Check before take", "tipe": "toggle"},
+            {"kunci": "jeda", "label": "Jeda antar siklus (detik)", "tipe": "pecahan", "min": 0, "maks": 30, "langkah": 0.05},
+        ],
+    },
+    {
+        "nama": "Spammer",
+        "kategori": "spammer",
+        "fitur": "spammer",
+        "keterangan": "kirim teks berulang ke dunia",
+        "kontrol": [
+            {"kunci": "delay", "label": "Jeda antar pesan (ms)", "tipe": "angka", "min": 100, "maks": 60000, "langkah": 100},
+            {"kunci": "shuffle", "label": "Acak urutan teks", "tipe": "toggle"},
+            {"kunci": "teks", "label": "Daftar teks (satu per baris)", "tipe": "teks_panjang"},
+        ],
+    },
+    {
+        "nama": "Auto Drop",
+        "kategori": "autodrop",
+        "fitur": "autodrop",
+        "keterangan": "buang item saat inventaris melewati batas",
+        "kontrol": [
+            {"kunci": "minimum", "label": "Minimum to drop", "tipe": "angka", "min": 0, "maks": 4000, "langkah": 10},
+            {"kunci": "mode", "label": "Cara buang", "tipe": "pilihan", "opsi": ["drop", "trash"]},
+            {"kunci": "jeda", "label": "Jeda antar siklus (detik)", "tipe": "pecahan", "min": 0.2, "maks": 60, "langkah": 0.1},
+            {"kunci": "world", "label": "Dunia tujuan buang", "tipe": "teks"},
+            {"kunci": "x", "label": "Posisi X buang (0 = sekarang)", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": "y", "label": "Posisi Y buang (0 = sekarang)", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
+        ],
+    },
+    {
+        "nama": "Path Finder",
+        "kategori": "pathfinder",
+        "fitur": "path",
+        "keterangan": "cari jalan ke koordinat lalu tempuh",
+        "kontrol": [
+            {"kunci": "x", "label": "Tujuan X", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": "y", "label": "Tujuan Y", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": "block_jump", "label": "Tile padat = penghalang", "tipe": "toggle"},
+            {"kunci": "teleport_path", "label": "Teleport per tile", "tipe": "toggle"},
+            {"kunci": "jeda", "label": "Jeda antar langkah (detik)", "tipe": "pecahan", "min": 0, "maks": 2, "langkah": 0.02},
+        ],
+    },
+    {
+        "nama": "Replay",
+        "kategori": "replay",
+        "fitur": "replay",
+        "keterangan": "rekam gerakan lalu putar ulang",
+        "kontrol": [
+            {"kunci": "rekam", "label": "Mulai rekam", "tipe": "tombol", "aksi": "record", "gaya": "primary"},
+            {"kunci": "berhenti_rekam", "label": "Stop rekam", "tipe": "tombol", "aksi": "stop_record", "gaya": "ghost"},
+            {"kunci": "putar", "label": "Putar rekaman", "tipe": "tombol", "aksi": "play", "gaya": "primary"},
+            {"kunci": "berhenti", "label": "Stop putar", "tipe": "tombol", "aksi": "stop", "gaya": "ghost"},
+            {"kunci": "simpan", "label": "Simpan ke berkas", "tipe": "tombol", "aksi": "save", "gaya": "ghost"},
+            {"kunci": "muat", "label": "Muat dari berkas", "tipe": "tombol", "aksi": "load", "gaya": "ghost"},
+            {"kunci": "hapus", "label": "Hapus rekaman", "tipe": "tombol", "aksi": "clear", "gaya": "danger"},
+            {"kunci": "file", "label": "Nama berkas", "tipe": "teks"},
+            {"kunci": "loop", "label": "Ulang terus", "tipe": "toggle"},
+            {"kunci": "custom_delay", "label": "Jeda khusus (ms)", "tipe": "angka", "min": 0, "maks": 60000, "langkah": 50},
+        ],
+    },
+]
+
+
+def skema_fitur() -> list[dict]:
+    """Skema panel untuk GUI (kategori + kontrol + nilai sekarang)."""
+    return SKEMA_FITUR

@@ -718,26 +718,95 @@ class Handler(BaseHTTPRequestHandler):
                 "menu": TILE_MENU, "bot": bot.stats(), "bots": daftar}
 
     def _peta(self, label: str) -> dict:
-        """Peta dunia siap-render: hanya tile tak-kosong supaya payload kecil."""
+        """Isi dunia apa adanya: tiap koordinat punya fg/bg + nama item.
+
+        GUI tidak merender gambar — cuma membaca isi tile, jadi payload dibuat
+        ringkas: satu entri per tile tak-kosong.
+        """
         bot = self._bot(label)
         if bot is None:
             return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
         w = bot.world
-        db = bot.items_db
+        db = getattr(bot, "items_db", None) or (self.runner.items_db if self.runner else None)
         tiles = []
         for t in w.tiles:
-            if t.fg == 0 and t.bg == 0:
+            if t.fg == 0 and t.bg == 0 and not t.is_seed and not t.label:
                 continue
             tiles.append({
-                "x": t.x, "y": t.y, "fg": t.fg, "bg": t.bg,
-                "flags": t.flags, "seed": t.is_seed, "ready": t.ready,
-                "name": db.name_of(t.fg) if db else str(t.fg),
+                "x": t.x, "y": t.y,
+                "fg": t.fg, "bg": t.bg,
+                "fg_name": db.name_of(t.fg) if (db and t.fg) else "",
+                "bg_name": db.name_of(t.bg) if (db and t.bg) else "",
+                "flags": t.flags,
+                "seed": t.is_seed,
+                "ready": bool(t.ready),
+                "fruit": t.fruit_count,
+                "label": t.label,
             })
-        pemain = [{"x": p.tile_x, "y": p.tile_y, "name": p.name, "local": p is bot.local}
+        pemain = [{"id": p.netid, "x": p.tile_x, "y": p.tile_y,
+                   "name": p.name, "local": p is bot.local}
                   for p in bot.players.values()]
         return {"ok": True, "label": bot.label, "world": w.name,
                 "w": w.width, "h": w.height, "tiles": tiles,
-                "players": pemain, "dropped": len(w.dropped)}
+                "players": pemain, "dropped": len(w.dropped),
+                "seeds": len(w.find_seeds(False)),
+                "ready": len(w.find_seeds(True))}
+
+    def _detail_bot(self, label: str) -> dict:
+        """Semua isi satu bot dalam satu payload: statistik, chat, console,
+        inventaris, fitur, peta. Dipakai halaman detail bot di GUI."""
+        bot = self._bot(label)
+        if bot is None:
+            return {"ok": False, "error": "belum ada bot — tambah akun dulu"}
+
+        fb = bot.fitur
+        fitur = {
+            "autofarm": getattr(fb.autofarm, "aktif", False),
+            "autocollect": getattr(fb.autocollect, "aktif", False),
+            "spammer": getattr(fb.spammer, "aktif", False),
+            "autodrop": getattr(fb.autodrop, "aktif", False),
+            "pathfinder": getattr(fb.path, "aktif", False),
+            "replay": getattr(fb.replay, "aktif", False),
+        }
+        af = fb.autofarm
+        return {
+            "ok": True,
+            "label": bot.label,
+            "stats": bot.stats(),
+            "fitur": fitur,
+            "status_fitur": fb.status(),
+            "autofarm": {
+                "seed_id": af.seed_id,
+                "target_tiles": [{"x": x, "y": y} for x, y in af.target_tiles],
+                "do_break": af.do_break,
+                "do_place": af.do_place,
+                "verify": af.verify,
+                "verify_pos": af.verify_pos,
+                "verify_delay": af.verify_delay,
+                "punch_count": af.punch_count,
+                "punch_delay": af.punch_delay,
+                "place_delay": af.place_delay,
+                "siklus_delay": af.siklus_delay,
+                "faster": af.faster,
+                "show_punch": af.show_punch,
+                "collect": af.collect,
+                "collect_delay": af.collect_delay,
+                "collect_radius": af.collect_radius,
+                "collect_block": af.collect_block,
+                "collect_seed": af.collect_seed,
+                "drop_aktif": af.drop_aktif,
+                "drop_minimum": af.drop_minimum,
+                "drop_x": af.drop_x,
+                "drop_y": af.drop_y,
+                "drop_world": af.drop_world,
+                "pick_aktif": af.pick_aktif,
+                "pick_world": af.pick_world,
+                "pick_mode": af.pick_mode,
+            },
+            "chat": bot.chat.terakhir(200),
+            "console": bot.console.contents[-300:],
+            "inventory": self._inventori(bot.label).get("items", [])[:120],
+        }
 
     # -- util -------------------------------------------------------------- #
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
@@ -772,6 +841,8 @@ class Handler(BaseHTTPRequestHandler):
             "autocollect": fb.autocollect,
             "spammer": fb.spammer,
             "autodrop": fb.autodrop,
+            "path": fb.path,
+            "pathfinder": fb.path,
             "replay": fb.replay,
         }
         if nama == "stop_all":
@@ -808,49 +879,61 @@ class Handler(BaseHTTPRequestHandler):
         if obj is None:
             return {"ok": False, "error": f"fitur '{nama}' tidak dikenal"}
 
-        # Autofarm punya banyak tombol di deltaX: pakai `atur()` yang memetakan
-        # alias (punch_count, autopunch_delay, overclock, autodrop_*, ...).
-        if nama == "autofarm" and opts:
-            fb.autofarm.atur(**opts)
+        # action "atur" = simpan parameter saja, jangan nyalakan/matikan.
+        # Autofarm punya `atur()` yang memetakan alias deltaX (punch_count,
+        # autopunch_delay, overclock, autodrop_*, ...); fitur lain pakai
+        # atribut langsung.
+        if aksi == "atur":
+            hasil = {"ok": True, "label": bot.label, "status": fb.status()}
+            if opts:
+                atur = getattr(obj, "atur", None)
+                hasil["diterapkan"] = (
+                    atur(**opts) if atur else self._set_parameter(obj, opts))
+            return hasil
 
-        # terapkan opsi (nama field deltaX dipakai apa adanya)
-        for k, v in opts.items():
-            if k in ("seed_id", "tiles") or nama == "autofarm":
-                continue
-            if k == "texts":
-                for t in (v if isinstance(v, list) else [v]):
-                    fb.spammer.tambah(t)
-            elif k == "radius":
-                obj.radius = int(v or 3)
-            elif k == "delay":
-                if hasattr(obj, "delay"):
-                    obj.delay = int(v or 1000)
-            elif k == "minimum":
-                fb.autodrop.minimum = int(v or 0)
-            elif k == "mode":
-                fb.autodrop.mode = str(v)
-            elif k == "file":
-                pass  # ditangani khusus per fitur di bawah
-            elif hasattr(obj, k):
-                setattr(obj, k, v)
+        # simpan parameter dulu, baru jalankan
+        if opts:
+            atur = getattr(obj, "atur", None)
+            if atur:
+                atur(**opts)
+            else:
+                self._set_parameter(obj, opts)
 
         if nama == "replay":
             try:
                 if aksi == "stop":
                     fb.replay.stop()
                 elif aksi == "save":
-                    fb.replay.simpan(str(opts.get("file") or "rekaman.json"))
+                    fb.replay.simpan(str(opts.get("file") or ""))
                 elif aksi == "load":
-                    fb.replay.muat(str(opts.get("file") or "rekaman.json"))
+                    fb.replay.muat(str(opts.get("file") or ""))
                 elif aksi == "play":
                     fb.replay.putar(bool(opts.get("loop", False)))
                 elif aksi == "clear":
                     fb.replay.bersihkan()
+                elif aksi == "stop_record":
+                    fb.replay.stop_rekam()
                 else:
                     fb.replay.mulai_rekam()
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": str(e), "status": fb.status()}
             return {"ok": True, "label": bot.label, "status": fb.status()}
+
+        if nama in ("path", "pathfinder"):
+            # FindPath butuh tujuan, bukan start(): x,y dari form.
+            if aksi == "stop":
+                return {"ok": True, "label": bot.label, "status": fb.status()}
+            try:
+                x = int(opts.get("x", 0))
+                y = int(opts.get("y", 0))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "koordinat tidak valid"}
+            try:
+                jalan = fb.path.jalan(x, y)
+            except Exception as e:  # noqa: BLE001
+                return {"ok": False, "error": str(e), "status": fb.status()}
+            return {"ok": bool(jalan), "label": bot.label,
+                    "tujuan": [x, y], "status": fb.status()}
 
         if aksi == "stop":
             obj.stop()
@@ -860,6 +943,54 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": str(e), "status": fb.status()}
         return {"ok": True, "label": bot.label, "status": fb.status()}
+
+    def _set_parameter(self, obj, opts: dict) -> dict:
+        """Terapkan parameter ke objek fitur, dengan konversi tipe aman.
+
+        GUI mengirim nilai mentah (string dari entry, float dari spin).
+        Fungsi ini menyamakan ke tipe atribut yang sudah ada supaya
+        `radius` tetap int dan `jeda` tetap float.
+        """
+        hasil = {}
+        for kunci, nilai in opts.items():
+            # spammer: daftar teks dikirim sebagai "teks" (satu per baris)
+            if kunci == "teks" and hasattr(obj, "daftar"):
+                teks = nilai if isinstance(nilai, list) else str(nilai).splitlines()
+                obj.daftar = [t.strip() for t in teks if str(t).strip()]
+                hasil["daftar"] = list(obj.daftar)
+                continue
+            if not hasattr(obj, kunci):
+                continue
+            lama = getattr(obj, kunci)
+            try:
+                if isinstance(lama, bool):
+                    nilai = bool(nilai)
+                elif isinstance(lama, int) and not isinstance(lama, bool):
+                    if isinstance(nilai, str):
+                        nilai = nilai.strip()
+                        nilai = int(float(nilai)) if nilai else 0
+                    else:
+                        nilai = int(nilai)
+                elif isinstance(lama, float):
+                    nilai = float(nilai)
+                elif isinstance(lama, (list, tuple)):
+                    if kunci == "target_tiles":
+                        nilai = obj.set_tiles(nilai)
+                    elif kunci == "tiles":
+                        nilai = [(int(t["x"]), int(t["y"])) if isinstance(t, dict)
+                                 else (int(t[0]), int(t[1])) for t in (nilai or [])]
+                    elif kunci == "daftar":
+                        nilai = [str(x) for x in (nilai or [])]
+                    else:
+                        nilai = list(nilai or [])
+                elif isinstance(lama, str):
+                    nilai = str(nilai)
+            except (TypeError, ValueError) as e:
+                hasil[kunci] = f"gagal: {e}"
+                continue
+            setattr(obj, kunci, nilai)
+            hasil[kunci] = nilai
+        return hasil
 
     def _pool(self):
         """ProxyPool per-runner (dibuat sekali, disimpan di runner)."""
@@ -949,6 +1080,27 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             self._send(200, PAGE.encode(), "text/html")
+        elif path == "/api/sprite":
+            # PNG 32x32 satu item, dipakai gambar dunia di GUI.
+            from .tiles import folder_cache, sprite_png  # noqa: PLC0415
+
+            q = self._query()
+            db = self.runner.items_db if self.runner else None
+            try:
+                item_id = int(q.get("id") or 0)
+            except ValueError:
+                item_id = 0
+            it = db.get(item_id) if db else None
+            if it is None:
+                self._json({"ok": False, "error": "item tidak ada"}, 404)
+                return
+            akar = Path(self.runner.config.data_dir or "data")
+            f = sprite_png(it, folder_cache(akar))
+            if f is None or not f.exists():
+                self._json({"ok": False, "error": "sprite tidak tersedia"}, 404)
+                return
+            self._send(200, f.read_bytes(), "image/png")
+            return
         elif path == "/api/status":
             self._json(self.runner.snapshot() if self.runner else {})
         elif path == "/api/accounts":
@@ -974,8 +1126,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"scripts": scripts})
         elif path == "/api/features":
             self._json(self._fitur_snapshot(self._query().get("label", "")))
+        elif path == "/api/bot":
+            self._json(self._detail_bot(self._query().get("label", "")))
         elif path == "/api/map":
             self._json(self._peta(self._query().get("label", "")))
+        elif path == "/api/chat":
+            bot = self._bot(self._query().get("label", ""))
+            if bot is None:
+                self._json({"ok": False, "error": "belum ada bot"})
+            else:
+                self._json({"ok": True, "label": bot.label,
+                            "chat": bot.chat.terakhir(200)})
         elif path == "/api/logs":
             self._json({"logs": self.runner.logs() if self.runner else []})
         elif path == "/api/items":
@@ -992,9 +1153,40 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/switch":
             self._json(self._switch_snapshot())
         elif path == "/api/features/schema":
-            from .features import TILE_MENU  # noqa: PLC0415
+            from .features import skema_fitur  # noqa: PLC0415
 
-            self._json({"ok": True, "menu": TILE_MENU})
+            label = self._query().get("label", "")
+            bot = self._bot(label)
+            nilai: dict[str, dict] = {}
+            aktif: dict[str, bool] = {}
+            if bot is not None:
+                for kat in skema_fitur():
+                    obj = getattr(bot.fitur, kat["fitur"], None)
+                    if obj is None:
+                        continue
+                    isi = {}
+                    for k in kat["kontrol"]:
+                        kunci = k["kunci"]
+                        if kunci == "teks" and hasattr(obj, "daftar"):
+                            isi["teks"] = "\n".join(obj.daftar)
+                            continue
+                        if kunci in ("target_tiles", "tiles"):
+                            isi[kunci] = [
+                                {"x": int(x), "y": int(y)}
+                                for x, y in getattr(obj, kunci, [])
+                            ]
+                            continue
+                        v = getattr(obj, kunci, None)
+                        if isinstance(v, (list, tuple)):
+                            v = list(v)
+                        isi[kunci] = v
+                    nilai[kat["fitur"]] = isi
+                    status = getattr(obj, "berjalan", None)
+                    if status is None:
+                        status = getattr(obj, "aktif", False)
+                    aktif[kat["fitur"]] = bool(status)
+            self._json({"ok": True, "skema": skema_fitur(), "nilai": nilai,
+                        "aktif": aktif})
         elif path == "/health":
             self._json({"ok": True, "running": bool(self.runner and not self.runner._stop.is_set())})
         else:
@@ -1042,7 +1234,8 @@ class Handler(BaseHTTPRequestHandler):
                 # segarkan lewat /player/growid/checktoken, lalu simpan.
                 from .ltoken import token_dari_hp  # noqa: PLC0415
 
-                cap = token_dari_hp()
+                pkg = str(payload.get("pkg") or "").strip()
+                cap = token_dari_hp(pkg) if pkg else token_dari_hp()
                 if not cap.ok:
                     self._json({"ok": False, "error": cap.pesan})
                     return

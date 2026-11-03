@@ -5,10 +5,13 @@ data/accounts.json
 data/config.json
 data/*.log
 data/lucifer.log
+data/proxies.json
+data/tile_cache/
 data/uji_tulis.txt
 data/laporan.txt
 
 # Hasil build
+desktop/build*/
 enet/*.so
 enet/*.dylib
 enet/*.dll

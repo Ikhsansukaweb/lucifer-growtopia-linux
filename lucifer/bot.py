@@ -242,6 +242,36 @@ class Log:
         self.content = ""
 
 
+class Chat:
+    """Riwayat obrolan satu bot: chat dunia + pesan server + chat sendiri.
+
+    Dipisah dari `Console` supaya di GUI bisa ditampilkan seperti chat in-game
+    (nama pengirim + isi), bukan tercampur log teknis.
+    """
+
+    def __init__(self, batas: int = 400) -> None:
+        self.baris: list[dict[str, Any]] = []
+        self.batas = batas
+
+    def tambah(self, pengirim: str, teks: str, jenis: str = "chat") -> dict[str, Any]:
+        b = {
+            "ts": time.strftime("%H:%M:%S"),
+            "pengirim": str(pengirim or ""),
+            "teks": str(teks or ""),
+            "jenis": jenis,          # chat | server | sendiri | sistem
+        }
+        self.baris.append(b)
+        if len(self.baris) > self.batas:
+            del self.baris[: len(self.baris) - self.batas]
+        return b
+
+    def bersihkan(self) -> None:
+        self.baris.clear()
+
+    def terakhir(self, n: int = 200) -> list[dict[str, Any]]:
+        return self.baris[-n:]
+
+
 class Signal:
     def __init__(self) -> None:
         self.x = 0
@@ -279,6 +309,7 @@ class Bot:
         self.world = World()
         self.inventory = Inventory()
         self.console = Console()
+        self.chat = Chat()
         self.log = Log()
         self.signal = Signal()
         self.players: dict[int, Player] = {}
@@ -714,7 +745,20 @@ class Bot:
             self.captcha_status = "failed"
             self._emit("captcha_failed", None)
         elif fn in ("OnTalkBubble",):
-            pass
+            # Obrolan dunia: OnTalkBubble(netid, teks, ...). Nama pengirim
+            # dicari dari daftar player; kalau belum dikenal pakai netid.
+            try:
+                netid = vl.get(1).as_int32() if vl.get(1) else 0
+                teks = P.remove_color(vl.get(2).as_string() if vl.get(2) else "")
+            except Exception:  # noqa: BLE001
+                netid, teks = 0, ""
+            if teks:
+                pl = self.players.get(netid)
+                nama = (pl.name if pl else "") or f"#{netid}"
+                jenis = "sendiri" if netid == (self.local.netid if self.local else -2) else "chat"
+                self.chat.tambah(nama, teks, jenis)
+                self.console.append(f"<{nama}> {teks}")
+                self._emit("chat", {"netid": netid, "name": nama, "text": teks})
 
     def _on_show_captcha(self, vl: P.VariantList) -> None:
         """Server meminta captcha (callback `onShowCaptcha`).
@@ -972,6 +1016,7 @@ class Bot:
             except Exception:  # noqa: BLE001
                 pass
         self._emit("say", text)
+        self.chat.tambah(self.name or "aku", text, "sendiri")
         return self.send_text(M.GenericText, f"action|input\n|text|{text}\n".encode())
 
     def warp(self, name: str, door_id: str = "0") -> bool:
