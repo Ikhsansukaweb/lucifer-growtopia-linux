@@ -590,7 +590,16 @@ class Runner:
             if cmd == "say":
                 return {"ok": bot.say(arg)}
             if cmd == "warp":
-                return {"ok": bot.warp(arg)}
+                ke = arg.strip()
+                dari = bot.world.name if bot.world else ""
+                hasil = bot.warp(ke)
+                if hasil:
+                    return {"ok": True, "dari": dari, "ke": bot.world.name or ke,
+                            "pesan": f"masuk {bot.world.name or ke}"}
+                return {"ok": False, "dari": dari, "ke": ke,
+                        "error": (f"gagal warp ke '{ke}' — server tidak mengirim data dunia "
+                                  f"dalam 10 detik (bot masih di '{dari or '?'}'; "
+                                  "cek nama dunia, akses, atau status login bot)")}
             if cmd == "connect":
                 return {"ok": bot.connect()}
             if cmd == "disconnect":

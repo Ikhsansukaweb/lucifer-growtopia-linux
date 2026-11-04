@@ -158,6 +158,9 @@ private:
     static void on_purge_proxy(GtkButton *, gpointer);
     static gboolean on_tick(gpointer);
     static gboolean bootstrap(gpointer);
+    // Hasil perintah dikirim dari thread pekerja ke loop GTK lewat idle.
+    struct HasilCmd { App *app; std::string cmd; std::string pesan; };
+    static gboolean tampil_hasil_cmd(gpointer);
     static void on_destroy(GtkWidget *, gpointer);
 
     void dialog_add_bot();

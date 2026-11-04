@@ -17,6 +17,7 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <thread>
 
 namespace lucifer {
 
@@ -791,16 +792,41 @@ void App::on_send_cmd(GtkButton *, gpointer self) {
     std::string label = a->aktif_;
     std::string cmd = isi_entry(a->entry_cmd_);
     if (cmd.empty()) return;
-    std::string err;
-    if (!a->post_ok("/api/command",
-                    "{\"label\":\"" + jesc(label) + "\",\"command\":\"" + jesc(cmd) + "\"}",
-                    &err)) {
-        a->append_console("[cmd] " + err);
-    } else {
-        a->append_console("> " + cmd);
-    }
+    a->append_console("> " + cmd);
     gtk_entry_set_text(GTK_ENTRY(a->entry_cmd_), "");
-    a->refresh();
+    // Perintah seperti warp/connect menunggu server sampai 10 detik; jangan
+    // bekukan UI. Kerjakan di thread, hasilnya dipasang lewat g_idle_add.
+    auto *kerja = new App::HasilCmd{a, cmd, ""};
+    std::thread([kerja, label, cmd]() {
+        Resp r = kerja->app->http_.post(
+            "/api/command",
+            "{\"label\":\"" + jesc(label) + "\",\"command\":\"" + jesc(cmd) + "\"}");
+        std::string pesan = "HTTP " + std::to_string(r.status);
+        JsonNode *n = r.ok() ? parse(r.body) : nullptr;
+        if (n) {
+            JsonObject *o = jobj(n);
+            if (o) {
+                bool ok = !json_object_has_member(o, "ok") || jbool(o, "ok");
+                if (ok) {
+                    std::string ke = jstr(o, "ke");
+                    pesan = ke.empty() ? "ok" : ("ok  " + jstr(o, "dari") + " -> " + ke);
+                } else {
+                    pesan = jstr(o, "error");
+                }
+            }
+            json_node_unref(n);
+        }
+        kerja->pesan = pesan;
+        g_idle_add(App::tampil_hasil_cmd, kerja);
+    }).detach();
+}
+
+gboolean App::tampil_hasil_cmd(gpointer p) {
+    auto *k = static_cast<App::HasilCmd *>(p);
+    k->app->append_console("  " + k->pesan);
+    k->app->refresh();
+    delete k;
+    return G_SOURCE_REMOVE;
 }
 
 void App::on_cmd_enter(GtkEntry *, gpointer self) {
