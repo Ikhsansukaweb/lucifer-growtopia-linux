@@ -1065,8 +1065,11 @@ class Bot:
             return False
         self._emit("warp", tujuan)
         awal = self.world.name
+        # Server Growtopia hanya memproses join_request lewat GameMessage (3).
+        # Dengan GenericText (2) paketnya diterima tapi diabaikan — bot tetap
+        # di dunia lama walau tak ada error. Diverifikasi di BESTI 2026-11-04.
         if not self.send_text(
-            M.GenericText, f"action|join_request\nname|{tujuan}\ninvitedWorld|{door_id}\n".encode()
+            M.GameMessage, f"action|join_request\nname|{tujuan}\ninvitedWorld|{door_id}\n".encode()
         ):
             return False
         if self.host is None:  # offline/mock: tak ada SendMapData untuk ditunggu
@@ -1081,7 +1084,7 @@ class Bot:
         return False
 
     def leaveWorld(self) -> bool:
-        return self.send_text(M.GenericText, b"action|quit_to_exit\n")
+        return self.send_text(M.GameMessage, b"action|quit_to_exit\n")
 
     def respawn(self) -> bool:
         return self.send_text(M.GenericText, b"action|respawn\n")
