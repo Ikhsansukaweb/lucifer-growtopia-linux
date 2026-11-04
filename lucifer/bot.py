@@ -314,6 +314,7 @@ class Bot:
         self.signal = Signal()
         self.players: dict[int, Player] = {}
         self.local: Optional[Player] = None
+        self._last_spawn_netid: int = 0
         self.gem_count = 0
         self.level = 0
         self.playtime = 0
@@ -705,6 +706,19 @@ class Bot:
 
     def _handle_tank(self, tank: Tank, ext: bytes) -> None:
         t = tank.type
+        # Rekam mentah paket agar format `SendTileUpdateData` dipastikan dari
+        # data nyata, bukan tebakan. Aktif hanya bila LUCIFER_DUMP=1.
+        if os.environ.get("LUCIFER_DUMP"):
+            try:
+                d = Path("/tmp/opencode")
+                d.mkdir(parents=True, exist_ok=True)
+                with (d / "tank_tile.log").open("a") as f:
+                    f.write(f"type={t} ix={tank.int_x} iy={tank.int_y} "
+                            f"val={tank.value} net={tank.net_id} "
+                            f"obj={tank.object_type} fl={tank.flags} "
+                            f"len={len(ext)} ext={ext[:96].hex()}\n")
+            except Exception:  # noqa: BLE001
+                pass
 
         if t == G.CallFunction:
             self._handle_variant(ext, tank)
@@ -723,8 +737,10 @@ class Bot:
             self._reply_ping(tank)
         elif t == G.SendTileUpdateData:
             self._apply_tile_update(ext)
+        elif t == G.State:
+            self._apply_state(tank)
         elif t == G.SetCharacterState:
-            self._apply_character_state(ext)
+            self._apply_character_state(ext, tank)
         elif t == G.UpdateStatus:
             self._apply_status(ext)
         elif t == G.SendTileTreeState:
@@ -758,19 +774,58 @@ class Bot:
             self.captcha_status = "failed"
             self._emit("captcha_failed", None)
         elif fn in ("OnSpawn", "OnAdd"):
-            # OnSpawn(netid, nama, negara, ...): simpan nama supaya chat dari
-            # pemain itu tidak tampil sebagai "#netid".
+            # OnSpawn membawa SATU string multi-baris, bukan argumen terpisah:
+            #     spawn|avatar\nnetID|5\nuserID|...\nname|Budi\n...
+            # Parser lama membaca argumen ke-2 sebagai nama → semua nama kosong.
+            netid, nama = 0, ""
             try:
-                netid = vl.get(1).as_int32() if vl.get(1) else 0
-                nama = P.remove_color(vl.get(2).as_string() if vl.get(2) else "")
+                teks = vl.get(1).as_string() if vl.get(1) else ""
+                for baris in teks.split("\n"):
+                    if "|" not in baris:
+                        continue
+                    k, v = baris.split("|", 1)
+                    k = k.strip().lower()
+                    if k == "netid":
+                        netid = int(v.strip() or 0)
+                    elif k == "name":
+                        nama = P.remove_color(v.strip())
             except Exception:  # noqa: BLE001
-                netid, nama = 0, ""
+                netid, nama = netid, ""
             if netid:
                 pl = self.players.get(netid) or Player(netid=netid)
                 if nama:
                     pl.name = nama
+                # OnSpawn untuk nama sendiri = pemain lokal. Ini cara pasti
+                # mendapat netid sendiri; paket `State` baru mengisi posisinya.
+                if nama and self.name and nama == self.name:
+                    pl.isLocalPlayer = True
+                    self.local = pl
                 self.players[netid] = pl
+                # Spawn terakhir sebelum OnSetPos = diri sendiri: server
+                # mengirim OnSpawn lalu OnSetPos untuk pemain lokal.
+                self._last_spawn_netid = netid
                 self._emit("player_add", pl)
+        elif fn == "OnSetPos":
+            # Posisi pemain LOKAL: OnSetPos(vec2). Dikirim server tepat setelah
+            # spawn; ini satu-satunya sumber posisi awal yang bisa dipercaya.
+            try:
+                v = vl.get(1)
+                val = getattr(v, "value", None)
+                if isinstance(val, tuple) and len(val) >= 2:
+                    x, y = float(val[0]), float(val[1])
+                    if self.local is None:
+                        # OnSetPos selalu mendahului/mengikuti OnSpawn diri
+                        # sendiri, jadi pakai netid spawn terakhir.
+                        netid = getattr(self, "_last_spawn_netid", 0) or (
+                            sorted(self.players)[-1] if self.players else 0)
+                        pl = self.players.get(netid) or Player(netid=netid)
+                        pl.isLocalPlayer = True
+                        self.local = pl
+                        self.players[netid] = pl
+                    self.local.posx, self.local.posy = x, y
+                    self._emit("player_move", self.local)
+            except Exception as e:  # noqa: BLE001
+                log.debug("OnSetPos gagal: %s", e)
         elif fn == "OnRemove":
             try:
                 netid = vl.get(1).as_int32() if vl.get(1) else 0
@@ -914,28 +969,60 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.debug("tile update gagal: %s", e)
 
-    def _apply_character_state(self, ext: bytes) -> None:
-        """Update posisi/keadaan pemain (SetCharacterState)."""
+    def _apply_state(self, tank: Tank) -> None:
+        """Posisi pemain dari paket `State` (type 0).
+
+        Server mengirim gerakan lewat `State`, bukan `SetCharacterState`:
+        `net_id` = pemain, `vector_x/vector_y` = posisi PIKSEl. `SetCharacterState`
+        (type 20) di server ini datang dengan extended kosong, jadi tidak bisa
+        dipakai. Tanpa handler ini `self.local` tak pernah terisi dan semua
+        perintah gerak balas `{"ok": false}`.
+        """
         try:
-            if len(ext) < 4:
+            netid = int(tank.net_id)
+            if netid in (0, 0xFFFFFFFF) or netid < 0:
                 return
-            netid = struct.unpack_from("<I", ext, 0)[0]
-            off = 4
-            if off + 5 > len(ext):
+            x, y = float(tank.vector_x), float(tank.vector_y)
+            if x <= 0.0 and y <= 0.0:
                 return
-            x, y = struct.unpack_from("<ff", ext, off)
-            off += 8
-            if off + 1 > len(ext):
-                return
-            flags = ext[off]
-            off += 1
             pl = self.players.get(netid) or Player(netid=netid)
             pl.posx, pl.posy = x, y
-            if netid == (self.local.netid if self.local else -1):
+            # JANGAN tebak pemain lokal dari "netid pertama tanpa nama": di
+            # dunia ini pemain lain (netid 5) bergerak lebih dulu dan sempat
+            # dianggap diri sendiri. Netid sendiri hanya dari `SetCharacterState`.
+            if pl.name and self.name and pl.name == self.name:
+                pl.isLocalPlayer = True
+                self.local = pl
+            elif self.local is not None and netid == self.local.netid:
                 pl.isLocalPlayer = True
                 self.local = pl
             self.players[netid] = pl
             self._emit("player_move", pl)
+        except Exception as e:  # noqa: BLE001
+            log.debug("state gagal: %s", e)
+
+    def _apply_character_state(self, ext: bytes, tank: Optional[Tank] = None) -> None:
+        """SetCharacterState: netid sendiri + state (bukan posisi).
+
+        Extended data kosong di server ini; `net_id` ada di header tank dan
+        itulah netid bot. Spawn pertama = diri sendiri (bot tak melihat dirinya
+        lewat `OnSpawn`).
+        """
+        try:
+            netid = int(tank.net_id) if tank is not None else 0
+            if netid in (0, 0xFFFFFFFF):
+                if len(ext) < 4:
+                    return
+                netid = struct.unpack_from("<I", ext, 0)[0]
+            pl = self.players.get(netid) or Player(netid=netid)
+            if self.local is None:
+                pl.isLocalPlayer = True
+                self.local = pl
+            elif netid == self.local.netid:
+                pl.isLocalPlayer = True
+                self.local = pl
+            self.players[netid] = pl
+            self._emit("character_state", pl)
         except Exception as e:  # noqa: BLE001
             log.debug("character state gagal: %s", e)
 
@@ -1007,20 +1094,34 @@ class Bot:
         if not self.host:
             return False
         if not isinstance(tank, Tank):
+            # Tabel Lua bisa punya field bernilai nil; `getattr` mengembalikan
+            # None (bukan default) untuk atribut yang ada tapi kosong, jadi
+            # konversi harus lewat helper yang aman.
+            def _num(*kunci, bawaan=0, tipe=int):
+                for k in kunci:
+                    v = getattr(tank, k, None)
+                    if v is None:
+                        continue
+                    try:
+                        return tipe(v)
+                    except (TypeError, ValueError):
+                        continue
+                return tipe(bawaan)
+
             tank = Tank(
-                type=int(getattr(tank, "type", 0)),
-                object_type=int(getattr(tank, "object_type", 0)),
-                net_id=int(getattr(tank, "netid", getattr(tank, "net_id", 0))),
-                flags=int(getattr(tank, "flags", 0)),
-                value=int(getattr(tank, "item", getattr(tank, "value", 0))),
-                float_variable=float(getattr(tank, "float_var", 0.0)),
-                vector_x=float(getattr(tank, "vec_x", 0.0)),
-                vector_y=float(getattr(tank, "vec_y", 0.0)),
-                vector_x2=float(getattr(tank, "vec2_x", 0.0)),
-                vector_y2=float(getattr(tank, "vec2_y", 0.0)),
-                particle_rotation=float(getattr(tank, "particle_rotation", 0.0)),
-                int_x=int(getattr(tank, "int_x", 0)),
-                int_y=int(getattr(tank, "int_y", 0)),
+                type=_num("type"),
+                object_type=_num("object_type"),
+                net_id=_num("netid", "net_id"),
+                flags=_num("flags"),
+                value=_num("item", "value"),
+                float_variable=_num("float_var", "state", tipe=float),
+                vector_x=_num("vec_x", "x", tipe=float),
+                vector_y=_num("vec_y", "y", tipe=float),
+                vector_x2=_num("vec2_x", "xs", tipe=float),
+                vector_y2=_num("vec2_y", "ys", tipe=float),
+                particle_rotation=_num("particle_rotation", tipe=float),
+                int_x=_num("int_x", "px"),
+                int_y=_num("int_y", "py"),
             )
         if not self._dalam_hook and self.on_event:
             try:
@@ -1228,12 +1329,25 @@ class Bot:
 
     # -- gerakan --------------------------------------------------------- #
     def moveTo(self, dx: int, dy: int) -> bool:
-        """Geser sebesar dx,dy tile dari posisi sekarang."""
+        """Geser sebesar dx,dy tile dari posisi sekarang, satu tile per paket.
+
+        Server menolak lompatan jauh (validasi kecepatan), jadi kirim bertahap
+        seperti klien asli, bukan satu paket 3 tile sekaligus.
+        """
         if not self.local:
             return False
-        x = self.local.posx + dx * 32
-        y = self.local.posy + dy * 32
-        return self._send_move(x, y)
+        langkah = max(abs(dx), abs(dy))
+        if langkah == 0:
+            return True
+        sx = (dx > 0) - (dx < 0)
+        sy = (dy > 0) - (dy < 0)
+        ok = True
+        for _ in range(langkah):
+            ok = self._send_move(
+                self.local.posx + sx * 32.0, self.local.posy + sy * 32.0,
+                jeda=0.04,
+            ) and ok
+        return ok
 
     def moveTile(self, x: int, y: int) -> bool:
         return self._send_move(x * 32.0, y * 32.0)
@@ -1250,43 +1364,40 @@ class Bot:
     def moveDown(self, range_: int = 1) -> bool:
         return self.moveTo(0, abs(int(range_)))
 
-    def _send_move(self, x: float, y: float, tunggu: float = 1.5) -> bool:
-        """Kirim State lalu pastikan posisi sendiri benar-benar berubah.
+    def _send_move(self, x: float, y: float, jeda: float = 0.0) -> bool:
+        """Kirim State; posisi lokal diperbarui sendiri (prediksi).
 
-        Server membalas `SetCharacterState` (netid sendiri) kalau gerakan
-        diterima. Tanpa menunggu echo itu, True cuma berarti "paket terkirim".
+        Server Growtopia TIDAK mengecho `State`/`SetCharacterState` balik ke
+        pengirim — diverifikasi lewat dump paket: setelah kirim State, tak ada
+        satu pun paket netid sendiri yang masuk (deltaX pun memakai prediksi
+        lokal, lihat `library.lua`). Menunggu echo = selalu gagal. Jadi: kirim,
+        lalu anggap berhasil kalau paket keluar; kalau kebetulan ada echo,
+        posisi diperbaiki dari data server.
         """
-        if not self.local:
-            # Belum ada netid sendiri (mis. belum spawn); tetap kirim dengan
-            # netid 0 supaya pemanggil tahu paketnya keluar, tapi jangan
-            # menunggu echo posisi yang tak akan pernah datang.
-            self._emit("move", (round(x, 1), round(y, 1)))
-            return self.send_raw(
-                Tank(type=G.State, vector_x=float(x), vector_y=float(y),
-                     vector_x2=float(x), vector_y2=float(y))
-            )
-        awal = (round(self.local.posx, 1), round(self.local.posy, 1))
         self._emit("move", (round(x, 1), round(y, 1)))
-        if not self.send_raw(
-            Tank(
-                type=G.State,
-                vector_x=float(x),
-                vector_y=float(y),
-                vector_x2=float(x),
-                vector_y2=float(y),
-                net_id=self.local.netid,
-            )
-        ):
+        tank = Tank(
+            type=G.State,
+            vector_x=float(x),
+            vector_y=float(y),
+            vector_x2=float(x),
+            vector_y2=float(y),
+            int_x=int(x) // 32,
+            int_y=int(y) // 32,
+        )
+        # net_id sengaja 0: deltaX (`library.lua:tileChange`) juga tidak pernah
+        # mengisi netid — server mengenali pengirim dari koneksi, dan menebak
+        # netid sendiri berisiko menggeser avatar pemain lain.
+        if not self.send_raw(tank):
             return False
-        if self.host is None:  # offline/mock: tak ada echo untuk ditunggu
-            return True
-        batas = time.time() + max(0.2, float(tunggu))
-        while time.time() < batas:
-            kini = (round(self.local.posx, 1), round(self.local.posy, 1))
-            if kini != awal and abs(self.local.posx - x) < 48 and abs(self.local.posy - y) < 48:
-                return True
-            time.sleep(0.05)
-        return False
+        # Prediksi lokal: tanpa ini panggilan `move` beruntun selalu dihitung
+        # dari posisi lama dan bot kembali ke tempat semula.
+        if self.local:
+            self.local.posx, self.local.posy = float(x), float(y)
+            self.players[self.local.netid] = self.local
+            self._emit("player_move", self.local)
+        if jeda > 0:
+            time.sleep(float(jeda))
+        return True
 
     def setDirection(self, faceleft: bool) -> bool:
         return self.send_raw(Tank(type=G.State, object_type=1 if faceleft else 0))

@@ -63,7 +63,10 @@ class Atlas:
         if x0 < 0 or y0 < 0 or x0 + TILE_PX > self.width or y0 + TILE_PX > self.height:
             return b"\x00" * (TILE_PX * TILE_PX * 4)
         out = bytearray()
-        for y in range(y0, y0 + TILE_PX):
+        # RTTXTR menyimpan baris dari BAWAH ke atas, jadi urutan baris dibalik
+        # (bukan cuma offset-nya). Tanpa ini Grass tampil rumput di bawah dan
+        # Sign tampil tiang di atas.
+        for y in range(y0 + TILE_PX - 1, y0 - 1, -1):
             awal = (y * self.width + x0) * 4
             out += self.pixels[awal : awal + TILE_PX * 4]
         return bytes(out)

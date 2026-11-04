@@ -2000,14 +2000,14 @@ class LuaEngine:
         try:
             src = p.read_text(encoding="utf-8")
         except OSError as e:
-            self._log(f"skrip '{p.name}' tidak terbaca: {e}")
+            self.log_line(f"skrip '{p.name}' tidak terbaca: {e}")
             return False
         try:
             self.lua.execute(f"__lucifer_compiled = assert(load([==[\n{src}\n]==], '{p.name}'))")
             self._scripts[p.name] = str(p)
             return True
         except Exception as e:  # noqa: BLE001
-            self._log(f"skrip '{p.name}' error saat dimuat: {e}")
+            self.log_line(f"skrip '{p.name}' error saat dimuat: {e}")
             return False
 
     def run_function(self, name: str, *args) -> bool:

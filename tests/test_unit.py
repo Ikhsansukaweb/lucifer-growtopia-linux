@@ -435,6 +435,20 @@ def test_bot_aksi() -> None:
     cek("paket 'moveTile' memakai Tank State/move",
         any(t.type in (0, 1) for t in tanks))
 
+    # moveTo: satu tile per paket + netid 0 (pola deltaX). Lompatan jauh
+    # ditolak validasi kecepatan server, jadi harus bertahap.
+    from lucifer.bot import Player as _Player
+    bot.local = _Player(netid=9, posx=1440.0, posy=736.0)
+    bot.local.isLocalPlayer = True
+    tank.clear()
+    cek("moveTo(3,0) benar", bot.moveTo(3, 0) is True)
+    langkah = [t for t in tank if isinstance(t, _Tank)]
+    cek("moveTo mengirim 3 paket, bukan 1", len(langkah) == 3, f"{len(langkah)} paket")
+    cek("moveTo memakai net_id 0", all(t.net_id == 0 for t in langkah))
+    cek("moveTo berakhir di posisi target",
+        bot.local.posx == 1440.0 + 96 and bot.local.posy == 736.0,
+        f"{bot.local.posx},{bot.local.posy}")
+
     # pathfinding
     path = bot.getPath(5, 5)
     cek("getPath() mengembalikan daftar", isinstance(path, list), f"{len(path)} langkah")
