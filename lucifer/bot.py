@@ -11,6 +11,7 @@ supaya skrip Lua yang ditulis untuk Lucifer bisa jalan di sini.
 
 from __future__ import annotations
 
+import os
 import collections
 import logging
 import math
@@ -180,34 +181,33 @@ class Inventory:
         return True
 
     def parse(self, data: bytes) -> None:
-        """Baca paket SendInventoryState (tank type 9)."""
+        """Baca paket SendInventoryState (tank type 9).
+
+        Format asli (terverifikasi dari dump server 5.58):
+
+            u8  version
+            u16 slotcount
+            u16 (tak dipakai)
+            u16 itemcount
+            itemcount x { u16 item_id, u8 count, u8 flags }
+
+        `flags` bit 0 = item sedang di tangan.
+        """
         self.items.clear()
         try:
-            off = 0
-            if len(data) < 2:
+            if len(data) < 7:
                 return
-            # Beberapa versi memakai u16 version, sebagian tidak.
-            self.slotcount = data[off] if off < len(data) else 0
-            off += 1
-            self.itemcount = data[off]
-            off += 1
+            self.version = data[0]
+            self.slotcount = struct.unpack_from("<H", data, 1)[0]
+            self.itemcount = struct.unpack_from("<H", data, 5)[0]
+            off = 7
             for _ in range(self.itemcount):
                 if off + 4 > len(data):
                     break
-                item_id = struct.unpack_from("<H", data, off)[0]
-                off += 2
-                if item_id == 0:
-                    # slot kosong: ada 1 byte tambahan
-                    off += 1
+                item_id, count, flags = struct.unpack_from("<HBB", data, off)
+                off += 4
+                if not item_id:
                     continue
-                if off >= len(data):
-                    break
-                count = data[off]
-                off += 1
-                if off >= len(data):
-                    break
-                flags = data[off]
-                off += 1
                 self.items[item_id] = InventoryItem(item_id, count, bool(flags & 0x01))
         except Exception as e:  # noqa: BLE001
             log.debug("parse inventory gagal: %s", e)
@@ -692,16 +692,29 @@ class Bot:
         if "tile_update" in action:
             self._emit("tile_update", fields)
 
+    def _dump(self, nama: str, data: bytes) -> None:
+        """Simpan payload mentah untuk diagnosis parser (LUCIFER_DUMP=1)."""
+        if not os.environ.get("LUCIFER_DUMP"):
+            return
+        try:
+            Path("/tmp/opencode").mkdir(parents=True, exist_ok=True)
+            Path(f"/tmp/opencode/dump_{nama}.bin").write_bytes(data)
+            log.info("dump %s: %d byte", nama, len(data))
+        except Exception:  # noqa: BLE001
+            pass
+
     def _handle_tank(self, tank: Tank, ext: bytes) -> None:
         t = tank.type
 
         if t == G.CallFunction:
             self._handle_variant(ext, tank)
         elif t == G.SendMapData:
+            self._dump("map", ext)
             self.world = parse_world(ext, self.items_db)
             self.players.clear()
             self._emit("world_loaded", self.world)
         elif t == G.SendInventoryState:
+            self._dump("inv", ext)
             self.inventory.parse(ext)
             self._emit("inventory", self.inventory)
         elif t == G.SendItemDatabaseData:
@@ -744,6 +757,28 @@ class Bot:
         elif fn == "OnCaptchaFailed":
             self.captcha_status = "failed"
             self._emit("captcha_failed", None)
+        elif fn in ("OnSpawn", "OnAdd"):
+            # OnSpawn(netid, nama, negara, ...): simpan nama supaya chat dari
+            # pemain itu tidak tampil sebagai "#netid".
+            try:
+                netid = vl.get(1).as_int32() if vl.get(1) else 0
+                nama = P.remove_color(vl.get(2).as_string() if vl.get(2) else "")
+            except Exception:  # noqa: BLE001
+                netid, nama = 0, ""
+            if netid:
+                pl = self.players.get(netid) or Player(netid=netid)
+                if nama:
+                    pl.name = nama
+                self.players[netid] = pl
+                self._emit("player_add", pl)
+        elif fn == "OnRemove":
+            try:
+                netid = vl.get(1).as_int32() if vl.get(1) else 0
+            except Exception:  # noqa: BLE001
+                netid = 0
+            if netid:
+                self.players.pop(netid, None)
+                self._emit("player_remove", netid)
         elif fn in ("OnTalkBubble",):
             # Obrolan dunia: OnTalkBubble(netid, teks, ...). Nama pengirim
             # dicari dari daftar player; kalau belum dikenal pakai netid.
@@ -1019,12 +1054,31 @@ class Bot:
         self.chat.tambah(self.name or "aku", text, "sendiri")
         return self.send_text(M.GenericText, f"action|input\n|text|{text}\n".encode())
 
-    def warp(self, name: str, door_id: str = "0") -> bool:
-        """Pindah ke dunia lain."""
-        self._emit("warp", name)
-        return self.send_text(
-            M.GenericText, f"action|join_request\nname|{name}\ninvitedWorld|{door_id}\n".encode()
-        )
+    def warp(self, name: str, door_id: str = "0", tunggu: float = 10.0) -> bool:
+        """Pindah ke dunia lain.
+
+        Return True hanya kalau server benar-benar mengirim SendMapData untuk
+        dunia tujuan (bukan sekadar paket join_request terkirim).
+        """
+        tujuan = name.strip()
+        if not tujuan:
+            return False
+        self._emit("warp", tujuan)
+        awal = self.world.name
+        if not self.send_text(
+            M.GenericText, f"action|join_request\nname|{tujuan}\ninvitedWorld|{door_id}\n".encode()
+        ):
+            return False
+        if self.host is None:  # offline/mock: tak ada SendMapData untuk ditunggu
+            return True
+        batas = time.time() + max(1.0, float(tunggu))
+        while time.time() < batas:
+            if self.world.name and self.world.name.upper() == tujuan.upper():
+                return True
+            if self.world.name != awal and self.world.name:
+                return True
+            time.sleep(0.2)
+        return False
 
     def leaveWorld(self) -> bool:
         return self.send_text(M.GenericText, b"action|quit_to_exit\n")
@@ -1193,18 +1247,43 @@ class Bot:
     def moveDown(self, range_: int = 1) -> bool:
         return self.moveTo(0, abs(int(range_)))
 
-    def _send_move(self, x: float, y: float) -> bool:
+    def _send_move(self, x: float, y: float, tunggu: float = 1.5) -> bool:
+        """Kirim State lalu pastikan posisi sendiri benar-benar berubah.
+
+        Server membalas `SetCharacterState` (netid sendiri) kalau gerakan
+        diterima. Tanpa menunggu echo itu, True cuma berarti "paket terkirim".
+        """
+        if not self.local:
+            # Belum ada netid sendiri (mis. belum spawn); tetap kirim dengan
+            # netid 0 supaya pemanggil tahu paketnya keluar, tapi jangan
+            # menunggu echo posisi yang tak akan pernah datang.
+            self._emit("move", (round(x, 1), round(y, 1)))
+            return self.send_raw(
+                Tank(type=G.State, vector_x=float(x), vector_y=float(y),
+                     vector_x2=float(x), vector_y2=float(y))
+            )
+        awal = (round(self.local.posx, 1), round(self.local.posy, 1))
         self._emit("move", (round(x, 1), round(y, 1)))
-        return self.send_raw(
+        if not self.send_raw(
             Tank(
                 type=G.State,
                 vector_x=float(x),
                 vector_y=float(y),
                 vector_x2=float(x),
                 vector_y2=float(y),
-                net_id=self.local.netid if self.local else 0,
+                net_id=self.local.netid,
             )
-        )
+        ):
+            return False
+        if self.host is None:  # offline/mock: tak ada echo untuk ditunggu
+            return True
+        batas = time.time() + max(0.2, float(tunggu))
+        while time.time() < batas:
+            kini = (round(self.local.posx, 1), round(self.local.posy, 1))
+            if kini != awal and abs(self.local.posx - x) < 48 and abs(self.local.posy - y) < 48:
+                return True
+            time.sleep(0.05)
+        return False
 
     def setDirection(self, faceleft: bool) -> bool:
         return self.send_raw(Tank(type=G.State, object_type=1 if faceleft else 0))

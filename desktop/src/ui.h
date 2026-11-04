@@ -202,9 +202,9 @@ private:
     GtkListStore *store_map_ = nullptr;
     GtkWidget *view_map_ = nullptr;
     GtkWidget *map_note_ = nullptr;
-    GtkListStore *store_inv_ = nullptr;
-    GtkWidget *view_inv_ = nullptr;
+    GtkWidget *inv_flow_ = nullptr;   // GtkFlowBox: tiap item = tile bergambar
     GtkWidget *inv_note_ = nullptr;
+    std::string inv_ttd_;             // tanda isi terakhir, hindari bangun ulang
     GtkWidget *detail_info_ = nullptr;
     int chat_lines_ = 0;
     int console_lines_ = 0;

@@ -662,6 +662,9 @@ setInterval(muatPeta, 8000);
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Perintah yang butuh label bot sebagai argumen pertama.
+    _PERINTAH_BOT = ("say", "warp", "connect", "disconnect", "move",
+                     "enter", "respawn", "collect")
     runner: Optional[Runner] = None
     server_version = "LuciferLinux"
 
@@ -1043,7 +1046,11 @@ class Handler(BaseHTTPRequestHandler):
                 "active": bool(it.isActive),
             })
         isi.sort(key=lambda x: (-x["count"], x["id"]))
+        maks = len(isi) or 1
         return {"ok": True, "label": bot.label,
+                "slot_total": bot.inventory.slotcount or 0,
+                "slot_pakai": bot.inventory.itemcount or len(isi),
+                "maks": maks,
                 "slots": len(isi), "items": isi[:400]}
 
     def _switch_snapshot(self) -> dict:
@@ -1215,7 +1222,17 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/command":
-                self._json(self.runner.command(str(payload.get("command", ""))))
+                teks = str(payload.get("command", "")).strip()
+                label = str(payload.get("label") or "")
+                # GUI mengirim label bot terpilih terpisah dari teks perintah.
+                # Sisipkan setelah kata perintah supaya "warp BESTI" dari
+                # konsol tidak jatuh ke bot utama. Kalau bot sudah disebut,
+                # biarkan apa adanya.
+                kata = teks.split(maxsplit=1)
+                if label and kata and kata[0].lower() in self._PERINTAH_BOT:
+                    if len(kata) < 2 or kata[1].split()[0] != label:
+                        teks = f"{kata[0]} {label}" + (f" {kata[1]}" if len(kata) > 1 else "")
+                self._json(self.runner.command(teks))
 
             elif path == "/api/login":
                 # Login dari dashboard: ltoken ATAU username+sandi (GrowID)

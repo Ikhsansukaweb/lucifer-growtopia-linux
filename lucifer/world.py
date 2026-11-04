@@ -15,9 +15,9 @@ Paket `SendMapData` (Tank type 4) berisi serialisasi dunia:
     dropped_count x item
     u16  base_weather, u16 (padding), u16 current_weather
 
-Pembacaan tile mengikuti bit flag Growtopia; tipe extra yang tidak dikenal
-TIDAK membuat parsing gagal (dilewati) — ini penting supaya bot tetap jalan
-di dunia dengan konten baru.
+Tabel extra mengikuti world_manager Growtopia-PythonBot (tipe 1..81).
+Tile dengan item "CBOR" (Party Projector, Auction Block, dst.) menyimpan
+`u32 panjang` + blob walau tanpa flag extra.
 """
 
 from __future__ import annotations
@@ -34,25 +34,40 @@ __all__ = ["Tile", "World", "TILE_FLAGS"]
 # Bit flag tile Growtopia
 TILE_FLAGS = {
     "EXTRA_DATA": 0x0001,
+    "HAS_PARENT": 0x0002,
     "LOCKED": 0x0002,
-    "SEED": 0x0008,  # "tree" / tanam
-    "FLIPPED": 0x0010,
+    "SPLICED": 0x0004,
+    "SEED": 0x0008,
+    "SEEDLING": 0x0010,
+    "FLIPPED": 0x0020,
     "ROTATED_LEFT": 0x0020,
     "OPEN": 0x0040,
     "PUBLIC": 0x0080,
-    "SILENCED": 0x0100,
+    "BG_ON": 0x0100,
+    "FG_ALT": 0x0200,
     "WATER": 0x0400,
     "GLUE": 0x0800,
     "FIRE": 0x1000,
     "PAINT_RED": 0x2000,
     "PAINT_GREEN": 0x4000,
     "PAINT_BLUE": 0x8000,
-    "PAINT_YELLOW": 0x0004,  # di Growtopia, 0x04 = paint kuning (bit 2)
+    "PAINT_YELLOW": 0x0004,
 }
 
-# Alias huruf kecil sesuai gaya API Lucifer: tile:hasFlag(TileFlag.locked)
 for _name, _val in list(TILE_FLAGS.items()):
     TILE_FLAGS.setdefault(_name.lower(), _val)
+
+# Item yang selalu membawa blok CBOR (u32 panjang + data) setelah extra.
+CBOR_IDS = {
+    15376,  # Party Projector
+    15546,  # Auction Block
+    3548,   # Battle Pet Cage
+    12598,  # Offering Table
+    14662,  # Operating Table
+    14666,  # Auto Surgeon Station
+    8624, 8630, 8636, 8642, 8648, 8654, 8660, 8666,
+    8672, 8678, 8684, 8690, 8696, 8702, 8708, 8714,
+}
 
 
 class _Reader:
@@ -70,6 +85,11 @@ class _Reader:
     def u16(self) -> int:
         (v,) = struct.unpack_from("<H", self.buf, self.pos)
         self.pos += 2
+        return v
+
+    def i32(self) -> int:
+        (v,) = struct.unpack_from("<i", self.buf, self.pos)
+        self.pos += 4
         return v
 
     def u32(self) -> int:
@@ -105,7 +125,6 @@ class Tile:
     parent: int = 0
     flags: int = 0
     extra_type: int = 0
-    # data khusus per extra type
     seed_age: int = 0
     fruit_count: int = 0
     ready: bool = False
@@ -114,7 +133,6 @@ class Tile:
     label: str = ""
     raw_extra: bytes = b""
 
-    # -- flag helpers ------------------------------------------------------ #
     def has(self, name: str) -> bool:
         return bool(self.flags & TILE_FLAGS[name])
 
@@ -166,7 +184,6 @@ class World:
     flags: int = 0
     error: str = ""
 
-    # -- akses ------------------------------------------------------------- #
     @property
     def tile_count(self) -> int:
         return self.width * self.height
@@ -190,7 +207,6 @@ class World:
         if 0 <= index < len(self.tiles):
             self.tiles[index] = tile
 
-    # -- pencarian --------------------------------------------------------- #
     def find_items(self, item_id: int) -> list[Tile]:
         return [t for t in self.tiles if t.fg == item_id]
 
@@ -208,11 +224,7 @@ class World:
 
 
 def parse_world(data: bytes, item_db=None) -> World:
-    """Ubah payload SendMapData menjadi objek World.
-
-    Tidak pernah melempar exception karena tile aneh — kesalahan dicatat di
-    `world.error` supaya bot tetap bisa jalan.
-    """
+    """Ubah payload SendMapData menjadi objek World."""
     w = World()
     r = _Reader(data)
     try:
@@ -259,31 +271,34 @@ def _read_tile(r: _Reader, x: int, y: int, item_db) -> Tile:
     t.parent = r.u16()
     t.flags = r.u16()
 
+    if t.flags & TILE_FLAGS["HAS_PARENT"]:
+        r.u16()
+
     if t.flags & TILE_FLAGS["EXTRA_DATA"]:
         t.extra_type = r.u8()
         _read_extra(r, t, item_db)
+
+    if t.fg in CBOR_IDS:
+        n = r.u32()
+        t.raw_extra = r.buf[r.pos : r.pos + n]
+        r.skip(n)
     return t
 
 
 def _read_extra(r: _Reader, t: Tile, item_db) -> None:
-    """Baca extra data per tipe.
-
-    Tipe yang tidak dikenal dilewati tanpa menghentikan parsing: kita tandai
-    saja dan berhenti membaca extra untuk tile ini (sisa byte akan terbaca
-    sebagai tile berikutnya — konsekuensi yang diterima, dan tercatat di log).
-    """
+    """Baca extra data per tipe (1..81)."""
     et = t.extra_type
-    if et == 1:  # Sign
+    if et == 1 or et == 2:  # Sign / Door
         t.label = r.string_u16()
-        r.u8()
-    elif et == 2:  # Door
-        t.label = r.string_u16()
-        r.u32()
+        if et == 1:
+            r.u8()
+        else:
+            r.u32()
     elif et == 3:  # Lock
         r.u8()
         t.owner_uid = r.u32()
         n = r.u32()
-        for _ in range(min(n, 512)):
+        for _ in range(min(n, 4096)):
             r.u32()
         r.u8()
         r.skip(7)
@@ -296,6 +311,13 @@ def _read_extra(r: _Reader, t: Tile, item_db) -> None:
             item = item_db.get(t.fg)
             t.grow_time = getattr(item, "grow_time", 0) if item else 0
         t.ready = bool(t.grow_time and t.seed_age >= t.grow_time)
+    elif et in (6, 7, 12):  # Mailbox / Bulletin / DonationBox
+        t.label = r.string_u16()
+        r.string_u16()
+        r.string_u16()
+        r.u8()
+    elif et == 8:  # Dice
+        r.u8()
     elif et == 9:  # Chemical source
         t.seed_age = r.u32()
         if item_db is not None:
@@ -304,18 +326,153 @@ def _read_extra(r: _Reader, t: Tile, item_db) -> None:
         t.ready = bool(t.grow_time and t.seed_age >= t.grow_time)
         if t.fg == 10656:
             r.skip(4)
-    elif et in (6, 7, 12):  # Mailbox / Bulletin / DonationBox
-        t.label = r.string_u16()
-        r.string_u16()
-        r.string_u16()
+    elif et == 10:
+        r.u32(); r.u8()
+    elif et == 11:
+        r.u32(); r.string_u16()
+    elif et == 14:  # Mannequin
+        r.string_u16(); r.u8(); r.u32()
+        for _ in range(9):
+            r.u16()
+    elif et == 15:
+        r.u32()
+    elif et == 16:
         r.u8()
-    elif et == 8:  # Dice
-        r.u8()
+    elif et == 17:
+        pass
+    elif et == 18:
+        r.u8(); r.u32()
+    elif et == 19:
+        for _ in range(9):
+            r.u16()
     elif et == 20:  # Crystal
         t.label = r.string_u16()
-    elif et == 33:  # CountryFlag
+    elif et == 21:
+        r.string_u16(); r.u32(); r.u8()
+    elif et == 22:
+        pass
+    elif et == 23:
+        r.u32()
+    elif et == 24:
+        r.u32(); r.i32()
+    elif et == 25:  # Fish tank port
+        r.u8()
+        n = r.u32()
+        r.skip((n // 2) * 8)
+    elif et == 26:
+        r.skip(5)
+    elif et == 27:
+        r.u32()
+    elif et == 28:
+        r.u16(); r.u32()
+    elif et == 30:
+        r.u8(); r.u32()
+    elif et == 31:  # Silkworm
+        r.u8(); r.string_u16()
+        for _ in range(4):
+            r.u32()
+        r.u8()
+        for _ in range(4):
+            r.u32()
+    elif et == 32:
+        n = r.u16()
+        r.skip(n * 4)
+    elif et == 33:
         t.label = r.string_u16()
+    elif et == 34:
+        pass
+    elif et == 35:
+        r.u32(); r.string_u16()
+    elif et == 36:
+        r.string_u16(); r.skip(12)
+    elif et == 37:
+        r.string_u16()
+        n = r.u32()
+        r.u32()
+        r.skip(n * 4)
+    elif et in (38, 39, 40, 41):
+        r.u32()
+    elif et == 42:
+        r.skip(21)
+    elif et == 43:
+        r.skip(16)
+    elif et == 44:
+        r.u8(); r.u32()
+        n = r.u32()
+        r.skip(n * 4)
+    elif et == 45:
+        pass
+    elif et == 47:
+        r.string_u16(); r.u32(); r.u8()
+    elif et == 48:  # Portrait
+        # ksy: u4,u4,5,u1,u2,face,hat,hair,u4 = 26 byte setelah label.
+        t.label = r.string_u16()
+        r.skip(26)
+    elif et == 49:
+        r.u32(); r.u32(); r.u8()
+    elif et == 50:
+        r.u32()
+    elif et in (51, 52):
+        pass
+    elif et == 53:
+        r.u32(); r.u32()
+    elif et == 54:
+        n = r.u16()
+        r.skip(n)
+    elif et == 55:
+        r.u32()
+        n = r.u32()
+        r.skip(n * 8)
+        r.skip(12)
+    elif et == 56:
+        r.string_u16(); r.u32()
+    elif et == 57:
+        r.u32()
+    elif et in (58, 59):
+        pass
+    elif et == 60:
+        r.u32(); r.u8()
+    elif et == 61:
+        r.u32(); r.u16()
+        for _ in range(4):
+            r.u32()
+    elif et == 62:  # Item sucker
+        r.u32(); r.u32(); r.u16(); r.u32()
+    elif et == 63:  # CyBot
+        r.u32(); r.u32()
+        n = r.u32()
+        for _ in range(n):
+            r.u32(); r.u32(); r.skip(7)
+    elif et == 65:  # Guild item
+        r.skip(17)
+    elif et == 66:
+        r.u8()
+    elif et == 67:
+        r.u32()
+        n = r.u32()
+        r.skip(n * 4)
+    elif et in (68, 69):
+        r.u32(); r.u32(); r.u32()
+        if et == 69:
+            r.u32()
+    elif et == 72:
+        for _ in range(3):
+            r.u32()
+    elif et == 73:
+        r.u32()
+    elif et == 74:
+        pass
+    elif et == 75:
+        r.u32(); r.u16(); r.u8()
+    elif et == 77:
+        r.u32()
+        n = r.u32()
+        r.skip(n * 4)
+    elif et == 79:
+        pass
+    elif et == 80:
+        r.u8(); r.u32(); r.u8(); r.u8(); r.u8()
+    elif et == 81:
+        r.u32(); r.u16(); r.u16()
     else:
-        # Tidak dikenal: catat, jangan tebak-tebakan panjang fieldnya.
         log.debug("extra tile tipe %s belum didukung (fg=%s)", et, t.fg)
-        t.raw_extra = b""

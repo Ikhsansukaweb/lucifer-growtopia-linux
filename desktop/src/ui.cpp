@@ -225,6 +225,10 @@ textview, textview text {
   font-size: 12px;
 }
 .dim { color: #6f7885; font-size: 11.5px; }
+.invoff { background-color: #161a20; border: 1px solid #262d36; border-radius: 8px; }
+.invon { background-color: #1d2129; border: 1px solid #e01b2e; border-radius: 8px; }
+.invjml { color: #ffffff; font-size: 11px; font-weight: 800;
+          background-color: rgba(0,0,0,0.65); padding: 0 3px; border-radius: 3px; }
 .mapbingkai { background-color: #0b0e12; border: 1px solid #222831; border-radius: 10px; }
 button.tileoff { background-color: #1b2027; border: 1px solid #2c333d; border-radius: 3px; min-width: 0; min-height: 0; padding: 0; }
 button.tileoff:hover { background-color: #232a33; }
@@ -709,20 +713,34 @@ GtkWidget *App::detail_inv() {
     GtkStyleContext *pc = gtk_widget_get_style_context(v);
     gtk_style_context_add_class(pc, "pane");
 
-    store_inv_ = gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
-    view_inv_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store_inv_));
-    const char *judul[] = {"ID", "NAMA ITEM", "JUMLAH"};
-    const int lebar[] = {80, 340, 100};
-    for (int i = 0; i < 3; ++i) add_col(view_inv_, judul[i], i, lebar[i]);
-    GtkWidget *sc = gtk_scrolled_window_new(nullptr, nullptr);
-    gtk_container_add(GTK_CONTAINER(sc), view_inv_);
-    gtk_box_pack_start(GTK_BOX(v), sc, TRUE, TRUE, 0);
+    GtkWidget *scroll = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_style_context_add_class(gtk_widget_get_style_context(scroll), "plain");
+
+    // Tiap item = satu kotak tile 64 px: gambar item + jumlah di sudut.
+    inv_flow_ = gtk_flow_box_new();
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(inv_flow_), GTK_SELECTION_NONE);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(inv_flow_), 40);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(inv_flow_), 1);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(inv_flow_), 8);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(inv_flow_), 8);
+    gtk_widget_set_margin_start(inv_flow_, 12);
+    gtk_widget_set_margin_end(inv_flow_, 12);
+    gtk_widget_set_margin_top(inv_flow_, 12);
+    gtk_widget_set_halign(inv_flow_, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(inv_flow_, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(inv_flow_, TRUE);
+    gtk_flow_box_set_homogeneous(GTK_FLOW_BOX(inv_flow_), TRUE);
+    gtk_container_add(GTK_CONTAINER(scroll), inv_flow_);
+    gtk_box_pack_start(GTK_BOX(v), scroll, TRUE, TRUE, 0);
 
     inv_note_ = gtk_label_new("—");
     gtk_widget_set_halign(inv_note_, GTK_ALIGN_START);
     GtkStyleContext *nc = gtk_widget_get_style_context(inv_note_);
     gtk_style_context_add_class(nc, "dim");
     gtk_widget_set_margin_top(inv_note_, 8);
+    gtk_widget_set_margin_start(inv_note_, 12);
     gtk_box_pack_start(GTK_BOX(v), inv_note_, FALSE, FALSE, 0);
     return v;
 }
@@ -934,6 +952,15 @@ void App::build_ui() {
     window_ = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window_), "Lucifer Linux");
     gtk_window_set_default_size(GTK_WINDOW(window_), 1180, 720);
+    // Ikon dock/taskbar (WM_CLASS diset lewat g_set_prgname di main).
+    {
+        const char *home = g_getenv("HOME");
+        std::string ic = repo_ + "/deploy/icons/lucifer.png";
+        if (access(ic.c_str(), R_OK) != 0 && home)
+            ic = std::string(home) + "/.local/share/icons/hicolor/256x256/apps/lucifer.png";
+        if (access(ic.c_str(), R_OK) == 0)
+            gtk_window_set_icon_from_file(GTK_WINDOW(window_), ic.c_str(), nullptr);
+    }
     gtk_window_set_titlebar(GTK_WINDOW(window_), make_header());
     g_signal_connect(window_, "destroy", G_CALLBACK(on_destroy), this);
 
@@ -951,6 +978,8 @@ void App::build_ui() {
 }
 
 void App::start_backend() {
+    // Sudah ada server di port ini? Jangan nyalakan kedua (bind error).
+    if (http_.get("/health").ok()) return;
     std::string py = repo_ + "/.venv/bin/python";
     if (access(py.c_str(), X_OK) != 0) py = "python3";
     std::vector<std::string> argv = {
@@ -986,11 +1015,33 @@ int App::run(int argc, char **argv) {
 }  // namespace lucifer
 
 // ---------------------------------------------------------------- main ---
+// Folder repo ditebak dari lokasi binary: <repo>/desktop/build/lucifer-desktop
+// atau <repo>/bin/lucifer-desktop, supaya .desktop bisa jalan dari mana saja.
+static std::string tebak_repo() {
+    char exe[4096];
+    ssize_t n = ::readlink("/proc/self/exe", exe, sizeof exe - 1);
+    if (n <= 0) return ".";
+    exe[n] = 0;
+    std::string dir(exe);
+    for (int naik = 0; naik < 3; ++naik) {
+        size_t slash = dir.find_last_of('/');
+        if (slash == std::string::npos) break;
+        dir.erase(slash);
+        if (access((dir + "/lucifer/__init__.py").c_str(), R_OK) == 0) return dir;
+    }
+    return ".";
+}
+
 int main(int argc, char **argv) {
+    // WM_CLASS = "lucifer-desktop" — dipakai StartupWMClass di lucifer.desktop
+    // supaya ikon dock menempel ke launcher, bukan ikon generik.
+    g_set_prgname("lucifer-desktop");
+    g_set_application_name("Lucifer Linux");
+    gdk_set_program_class("LuciferLinux");
     std::string url = "http://127.0.0.1:8787";
     int port = 8787;
     bool spawn = true;
-    std::string repo = ".";
+    std::string repo = tebak_repo();
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];

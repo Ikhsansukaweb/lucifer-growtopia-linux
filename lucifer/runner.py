@@ -565,7 +565,19 @@ class Runner:
         if cmd in ("say", "warp", "connect", "disconnect", "move", "enter", "respawn", "collect") and len(parts) > 1:
             if not self.engine:
                 return {"ok": False, "error": "engine belum siap"}
-            bot = self.engine.bots.get(parts[1]) or self.engine.parent
+            # GUI mengirim "say <teks>" tanpa nama bot; CLI memakai
+            # "say <bot> <teks>". Kalau kata pertama bukan label bot yang
+            # terdaftar, seluruh sisa baris dianggap argumen bot utama.
+            bots = self.engine.bots or {}
+            kepala = parts[1].split(maxsplit=1)[0]
+            if kepala in bots:
+                bot = bots[kepala]
+                arg = parts[2] if len(parts) > 2 else ""
+            else:
+                # Tak ada nama bot di depan: pakai bot utama, atau satu-satunya
+                # bot yang ada. Untuk "say", seluruh sisa baris = teks chat.
+                bot = self.engine.parent or (list(bots.values())[0] if len(bots) == 1 else None)
+                arg = " ".join(parts[1:])
             if not bot:
                 return {
                     "ok": False,
@@ -575,9 +587,8 @@ class Runner:
                         "`lucifer login --ltoken \"<TOKEN>\"` dulu."
                     ),
                 }
-            arg = parts[2] if len(parts) > 2 else ""
             if cmd == "say":
-                return {"ok": bot.say(" ".join(parts[2:]))}
+                return {"ok": bot.say(arg)}
             if cmd == "warp":
                 return {"ok": bot.warp(arg)}
             if cmd == "connect":
@@ -586,8 +597,9 @@ class Runner:
                 bot.disconnect()
                 return {"ok": True}
             if cmd == "move":
-                direction = arg.lower()
-                step = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+                bit = arg.split()
+                direction = bit[0].lower() if bit else ""
+                step = int(bit[1]) if len(bit) > 1 and bit[1].isdigit() else 1
                 if direction in ("left", "kiri"): return {"ok": bot.moveLeft(step)}
                 if direction in ("right", "kanan"): return {"ok": bot.moveRight(step)}
                 if direction in ("up", "atas"): return {"ok": bot.moveUp(step)}

@@ -147,7 +147,7 @@ def decode_item_name(raw: bytes, item_id: int) -> str:
 class ItemDatabase:
     """Database item in-memory + lookup cepat berdasarkan nama."""
 
-    __slots__ = ("version", "count", "items", "by_name", "source")
+    __slots__ = ("version", "count", "items", "by_name", "source", "terbaca")
 
     def __init__(self, version: int = 0, source: str = "") -> None:
         self.version = version
@@ -155,6 +155,7 @@ class ItemDatabase:
         self.items: dict[int, Item] = {}
         self.by_name: dict[str, Item] = {}
         self.source = source
+        self.terbaca = 0
 
     # -- akses ------------------------------------------------------------- #
     def get(self, item_id: int) -> Optional[Item]:
@@ -187,8 +188,20 @@ class ItemDatabase:
         r = _Reader(data)
         db = cls(version=r.u16(), source=source)
         db.count = r.u32()
-        for _ in range(db.count):
-            item = _read_item(r, db.version)
+        # Version 25+ menambah field yang layout-nya belum kita kenal. Daripada
+        # menebak dan menggeser semua item sesudahnya, berhenti di item pertama
+        # yang gagal — ID sebelum itu tetap akurat dan cukup untuk render peta.
+        for i in range(db.count):
+            try:
+                item = _read_item(r, db.version)
+            except Exception:  # noqa: BLE001
+                db.terbaca = i
+                break
+            if item.id != i:
+                db.terbaca = i
+                break
+            if db.version >= 25:
+                r.skip(9)  # ponytail: 9 byte ekor v25+ hasil cocok-cocokan dump
             db.items[item.id] = item
             db.by_name.setdefault(item.name.strip().lower(), item)
         return db

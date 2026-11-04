@@ -81,6 +81,13 @@ run: install enet
 web: install enet
 	@$(LUCIFER) web --host 0.0.0.0 --port 8787
 
+# GUI native GTK3 -> masuk daftar aplikasi (Activities / launcher).
+desktop:
+	bash deploy/pasang-desktop.sh
+
+desktop-hapus:
+	bash deploy/pasang-desktop.sh --hapus
+
 test: install enet
 	@echo "$(BOLD)== Uji unit (tanpa jaringan) ==$(RESET)"
 	@$(PY) tests/test_unit.py
@@ -105,6 +112,9 @@ test-offline: install enet
 	@$(PY) tests/test_unit.py && $(PY) tests/test_ltoken.py && $(PY) tests/test_ui_hp.py && $(PY) tests/test_web.py && $(PY) tests/test_login_ui.py
 
 # ------------------------------------------------------------------ #
+# 5. GUI native
+# ------------------------------------------------------------------ #
+
 # 5. Bersih-bersih
 # ------------------------------------------------------------------ #
 clean:

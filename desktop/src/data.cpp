@@ -202,6 +202,19 @@ void App::refresh_bots() {
 
     if (combo_proxy_bot_) isi_combo(combo_proxy_bot_, combo);
 
+    // Tanpa ini tidak ada baris terpilih, jadi Hapus/Connect tidak tahu
+    // bot mana yang dimaksud dan diam saja.
+    if (view_bots_ && !combo.empty()) {
+        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(view_bots_));
+        GtkTreeModel *model = nullptr;
+        GtkTreeIter it;
+        if (!gtk_tree_selection_get_selected(sel, &model, &it)) {
+            GtkTreeIter first;
+            if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store_bots_), &first))
+                gtk_tree_selection_select_iter(sel, &first);
+        }
+    }
+
     char buf[256];
     std::snprintf(buf, sizeof buf, "Online %ld   ·   Offline %ld   ·   Total %ld   ·   Gems %ld",
                   online_, total > online_ ? total - online_ : 0, total, gems);
@@ -432,29 +445,91 @@ void App::refresh_detail_map() {
 }
 
 void App::refresh_detail_inv() {
-    if (aktif_.empty() || !store_inv_) return;
+    if (aktif_.empty() || !inv_flow_) return;
     JsonObject *o = get_obj("/api/inventory?label=" + aktif_);
     if (!o) return;
-    kosongkan(store_inv_);
+
+    // tanda isi: bangun ulang hanya kalau berubah
+    std::string ttd;
     int total = 0;
-    if (json_object_has_member(o, "items")) {
-        JsonArray *arr = json_object_get_array_member(o, "items");
-        guint n = arr ? json_array_get_length(arr) : 0;
-        for (guint i = 0; i < n; ++i) {
-            JsonObject *it = jobj(json_array_get_element(arr, i));
-            if (!it) continue;
-            ++total;
-            baris(store_inv_, {
-                std::to_string(jint(it, "id")),
-                jstr(it, "name"),
-                std::to_string(jint(it, "count")),
-            });
-        }
+    JsonArray *arr = json_object_has_member(o, "items")
+                         ? json_object_get_array_member(o, "items") : nullptr;
+    guint n = arr ? json_array_get_length(arr) : 0;
+    for (guint i = 0; i < n; ++i) {
+        JsonObject *it = jobj(json_array_get_element(arr, i));
+        if (!it) continue;
+        ++total;
+        ttd += std::to_string(jint(it, "id")) + ":" +
+               std::to_string(jint(it, "count")) + ";";
     }
+    if (ttd == inv_ttd_) {
+        if (inv_note_) {
+            char buf[128];
+            std::snprintf(buf, sizeof buf, "%d jenis item  ·  %ld/%ld slot",
+                          total, jint(o, "slot_pakai"), jint(o, "slot_total"));
+            gtk_label_set_text(GTK_LABEL(inv_note_), buf);
+        }
+        json_object_unref(o);
+        return;
+    }
+    inv_ttd_ = ttd;
+
+    // kosongkan lalu isi ulang dengan kotak bergambar
+    std::vector<GtkWidget *> buang;
+    gtk_container_foreach(GTK_CONTAINER(inv_flow_),
+                          [](GtkWidget *w, gpointer d) {
+                              static_cast<std::vector<GtkWidget *> *>(d)->push_back(w);
+                          }, &buang);
+    for (GtkWidget *w : buang) gtk_widget_destroy(w);
+
+    for (guint i = 0; i < n; ++i) {
+        JsonObject *it = jobj(json_array_get_element(arr, i));
+        if (!it) continue;
+        int id = static_cast<int>(jint(it, "id"));
+        int jml = static_cast<int>(jint(it, "count"));
+        std::string nama = jstr(it, "name");
+
+        // kotak: gambar 48 px + angka jumlah di kanan-bawah
+        GtkWidget *kotak = gtk_overlay_new();
+        gtk_widget_set_size_request(kotak, 64, 64);
+        GtkStyleContext *kc = gtk_widget_get_style_context(kotak);
+        gtk_style_context_add_class(kc, jbool(it, "active") ? "invon" : "invoff");
+
+        GtkWidget *gambar = gtk_image_new();
+        GdkPixbuf *pb = sprite(id);
+        if (pb) {
+            GdkPixbuf *kcl = gdk_pixbuf_scale_simple(pb, 48, 48, GDK_INTERP_BILINEAR);
+            gtk_image_set_from_pixbuf(GTK_IMAGE(gambar), kcl);
+            if (kcl) g_object_unref(kcl);
+        } else {
+            gtk_image_set_from_icon_name(GTK_IMAGE(gambar), "image-missing",
+                                         GTK_ICON_SIZE_DIALOG);
+        }
+        gtk_widget_set_halign(gambar, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(gambar, GTK_ALIGN_CENTER);
+        gtk_container_add(GTK_CONTAINER(kotak), gambar);
+
+        GtkWidget *angka = gtk_label_new(std::to_string(jml).c_str());
+        gtk_widget_set_halign(angka, GTK_ALIGN_END);
+        gtk_widget_set_valign(angka, GTK_ALIGN_END);
+        gtk_widget_set_margin_end(angka, 3);
+        gtk_widget_set_margin_bottom(angka, 1);
+        GtkStyleContext *ac = gtk_widget_get_style_context(angka);
+        gtk_style_context_add_class(ac, "invjml");
+        gtk_overlay_add_overlay(GTK_OVERLAY(kotak), angka);
+
+        // tooltip: nama + id
+        std::string tip = nama + "  (#" + std::to_string(id) + ")";
+        gtk_widget_set_tooltip_text(kotak, tip.c_str());
+
+        gtk_flow_box_insert(GTK_FLOW_BOX(inv_flow_), kotak, -1);
+    }
+    gtk_widget_show_all(inv_flow_);
+
     if (inv_note_) {
         char buf[128];
-        std::snprintf(buf, sizeof buf, "%d jenis item  ·  %ld slot terpakai",
-                      total, jint(o, "slots"));
+        std::snprintf(buf, sizeof buf, "%d jenis item  ·  %ld/%ld slot",
+                      total, jint(o, "slot_pakai"), jint(o, "slot_total"));
         gtk_label_set_text(GTK_LABEL(inv_note_), buf);
     }
     json_object_unref(o);
@@ -531,7 +606,10 @@ void App::refresh_items(const std::string &q) {
 }
 
 // --------------------------------------------------------------- pilih ---
-std::string App::selected_bot() { return pilih_teks(view_bots_, 0); }
+std::string App::selected_bot() {
+    std::string l = pilih_teks(view_bots_, 0);
+    return l.empty() ? aktif_ : l;
+}
 std::string App::selected_script() { return pilih_teks(view_scripts_, 0); }
 std::string App::proxy_host_port() {
     std::string h = pilih_teks(view_proxies_, 0);
@@ -662,9 +740,29 @@ void App::on_add_bot(GtkButton *, gpointer self) {
 void App::on_del_bot(GtkButton *, gpointer self) {
     auto *a = static_cast<App *>(self);
     std::string label = a->selected_bot();
-    if (label.empty()) return;
+    if (label.empty()) {
+        a->append_console("[hapus] pilih bot dulu di tabel");
+        return;
+    }
+
+    GtkWidget *d = gtk_message_dialog_new(
+        GTK_WINDOW(a->window_), GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+        GTK_BUTTONS_NONE, "Hapus bot \"%s\"?", label.c_str());
+    gtk_message_dialog_format_secondary_text(
+        GTK_MESSAGE_DIALOG(d), "Akun dan bot akan dihapus dari accounts.json.");
+    gtk_dialog_add_buttons(GTK_DIALOG(d), "Batal", GTK_RESPONSE_CANCEL,
+                           "Hapus", GTK_RESPONSE_ACCEPT, nullptr);
+    gint jawab = gtk_dialog_run(GTK_DIALOG(d));
+    gtk_widget_destroy(d);
+    if (jawab != GTK_RESPONSE_ACCEPT) return;
+
     std::string err;
-    a->post_ok("/api/account/delete", "{\"label\":\"" + jesc(label) + "\"}", &err);
+    if (!a->post_ok("/api/account/delete",
+                    "{\"label\":\"" + jesc(label) + "\"}", &err))
+        a->append_console("[hapus] " + label + ": " + err);
+    else
+        a->append_console("[hapus] " + label + " dihapus");
+    if (a->aktif_ == label) a->aktif_.clear();
     a->refresh();
 }
 
@@ -887,9 +985,12 @@ void App::dialog_add_bot() {
     gtk_entry_set_visibility(GTK_ENTRY(e_pass), FALSE);
     GtkWidget *e_proxy = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(e_proxy), "socks5://user:pass@host:port (opsional)");
+    GtkWidget *e_tok = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(e_tok), "tempel ltoken (lebih andal dari sandi)");
 
-    const char *nama[] = {"Label", "GrowID", "Password", "Proxy"};    GtkWidget *isi[] = {e_label, e_grow, e_pass, e_proxy};
-    for (int i = 0; i < 4; ++i) {
+    const char *nama[] = {"Label", "GrowID", "Password", "ltoken", "Proxy"};
+    GtkWidget *isi[] = {e_label, e_grow, e_pass, e_tok, e_proxy};
+    for (int i = 0; i < 5; ++i) {
         GtkWidget *l = gtk_label_new(nama[i]);
         gtk_widget_set_halign(l, GTK_ALIGN_END);
         gtk_grid_attach(GTK_GRID(grid), l, 0, i, 1, 1);
@@ -901,14 +1002,29 @@ void App::dialog_add_bot() {
 
     if (gtk_dialog_run(GTK_DIALOG(d)) == GTK_RESPONSE_ACCEPT) {
         std::string label = isi_entry(e_label);
-        if (!label.empty()) {
+        if (label.empty()) label = isi_entry(e_grow);
+        if (label.empty()) {
+            append_console("[tambah] label atau GrowID wajib diisi");
+        } else {
             std::string err;
-            post_ok("/api/login",
-                    "{\"label\":\"" + jesc(label) +
-                        "\",\"username\":\"" + jesc(isi_entry(e_grow)) +
-                        "\",\"password\":\"" + jesc(isi_entry(e_pass)) +
-                        "\",\"proxy\":\"" + jesc(isi_entry(e_proxy)) + "\"}",
-                    &err);
+            bool ok = post_ok("/api/login",
+                              "{\"label\":\"" + jesc(label) +
+                                  "\",\"username\":\"" + jesc(isi_entry(e_grow)) +
+                                  "\",\"password\":\"" + jesc(isi_entry(e_pass)) +
+                                  "\",\"ltoken\":\"" + jesc(isi_entry(e_tok)) +
+                                  "\",\"proxy\":\"" + jesc(isi_entry(e_proxy)) + "\"}",
+                              &err);
+            append_console(ok ? "[tambah] " + label + " ditambahkan"
+                              : "[tambah] " + label + ": " + err);
+            if (!ok) {
+                GtkWidget *md = gtk_message_dialog_new(
+                    GTK_WINDOW(window_), GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR,
+                    GTK_BUTTONS_OK, "Gagal menambah bot");
+                gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(md),
+                                                        "%s", err.c_str());
+                gtk_dialog_run(GTK_DIALOG(md));
+                gtk_widget_destroy(md);
+            }
             refresh();
         }
     }
