@@ -331,7 +331,7 @@ def _read_extra(r: _Reader, t: Tile, item_db) -> None:
     elif et == 11:
         r.u32(); r.string_u16()
     elif et == 14:  # Mannequin
-        r.string_u16(); r.u8(); r.u32()
+        t.label = r.string_u16(); r.u8(); r.u32()
         for _ in range(9):
             r.u16()
     elif et == 15:
