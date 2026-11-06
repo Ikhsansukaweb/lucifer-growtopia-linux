@@ -1068,6 +1068,36 @@ def test_status_gems_level() -> None:
     cek("UpdateStatus cadangan: gems", bot.gem_count == 99, str(bot.gem_count))
 
 
+def test_proxypool_kredensial_unik() -> None:
+    bagian("7d. ProxyPool: kredensial beda = entri beda")
+    import tempfile
+    from pathlib import Path
+
+    from lucifer.proxypool import ProxyPool
+
+    with tempfile.TemporaryDirectory() as d:
+        pool = ProxyPool(Path(d) / "proxies.json")
+        # Proxy "rotating gateway": host:port sama, kredensial beda = IP keluar
+        # beda. Dedupe host:port saja membuang semuanya kecuali satu.
+        baris = "\n".join(
+            f"socks5://user{i}:pass{i}@1.2.3.4:9999" for i in range(5)
+        )
+        r = pool.tambah(baris)
+        cek("5 kredensial sama host:port jadi 5 entri",
+            r["ditambah"] == 5 and r["total"] == 5, str(r))
+        cek("tambah baris identik tidak menambah",
+            pool.tambah("socks5://user0:pass0@1.2.3.4:9999")["ditambah"] == 0)
+
+        # muat ulang dari disk: kunci tetap konsisten
+        pool2 = ProxyPool(Path(d) / "proxies.json")
+        cek("muat ulang pertahankan 5 entri", len(pool2.daftar()) == 5,
+            str(len(pool2.daftar())))
+
+        hapus = pool2.hapus("1.2.3.4", 9999)
+        cek("hapus host:port membersihkan semua kredensial",
+            hapus["dihapus"] == 5 and hapus["total"] == 0, str(hapus))
+
+
 def test_tile_update_koordinat() -> None:
     bagian("7c. SendTileUpdateData: koordinat dari tank, ext = blok")
     import struct
@@ -1110,6 +1140,7 @@ def main() -> int:
                test_logon_fail_cooldown, test_hint_login_tidak_salah_menyebut_sandi,
                test_perintah_tanpa_argumen,
                test_status_gems_level, test_tile_update_koordinat,
+               test_proxypool_kredensial_unik,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

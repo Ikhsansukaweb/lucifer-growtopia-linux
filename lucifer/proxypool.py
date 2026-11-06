@@ -58,7 +58,12 @@ class ProxyPool:
         masuk = 0
         ditolak: list[str] = []
         with self._lock:
-            ada = {(e["host"], int(e["port"])) for e in self._isi}
+            # Kunci WAJIB termasuk user+passwd: proxy bergaya "rotating
+            # gateway" memakai host:port sama untuk ribuan kredensial, dan
+            # tiap kredensial keluar lewat IP berbeda. Dedupe host:port saja
+            # membuang 57 dari 58 proxy yang sah.
+            ada = {(e["host"], int(e["port"]), e.get("user", ""),
+                    e.get("passwd", "")) for e in self._isi}
             for baris in str(teks).replace(",", "\n").splitlines():
                 baris = baris.strip()
                 if not baris:
@@ -70,7 +75,7 @@ class ProxyPool:
                     continue
                 if p is None:
                     continue
-                kunci = (p.host, p.port)
+                kunci = (p.host, p.port, p.user, p.passwd)
                 if kunci in ada:
                     continue
                 self._isi.append({

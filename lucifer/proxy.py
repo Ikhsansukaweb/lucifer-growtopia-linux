@@ -273,14 +273,31 @@ def uji_enet(p: Proxy, server: tuple[str, int], timeout_ms: int = 6000) -> tuple
     except Exception as e:  # noqa: BLE001
         return False, f"modul enet tak bisa dimuat: {e}"
     h = None
+    relay = None
     try:
-        h = ENetHost(proxy=p.tuple4())
-        ok = h.connect(server[0], server[1], timeout_ms=timeout_ms)
+        # JANGAN pakai ENetHost(proxy=...): `enet_host_use_proxy()` di enet.so
+        # rusak (kirim greeting SOCKS5 lalu tutup soket). Relay lokal yang
+        # dipakai bot juga harus dipakai di sini, kalau tidak uji selalu gagal
+        # walau proxy sehat.
+        from .udprelay import RelayError, RelayUdp  # noqa: PLC0415
+
+        relay = RelayUdp(p, server).start()
+        h = ENetHost()
+        ok = h.connect("127.0.0.1", relay.port, timeout_ms=timeout_ms)
         return (ok, "ok — ENet tersambung ke server"
-                if ok else "ENet connect gagal (paket UDP tak sampai)")
+                if ok else f"ENet connect gagal (paket UDP tak sampai; "
+                           f"relay kirim/terima = {relay.statistik['kirim']}/"
+                           f"{relay.statistik['terima']})")
+    except RelayError as e:
+        return False, f"relay UDP gagal: {e}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"
     finally:
+        if relay is not None:
+            try:
+                relay.close()
+            except Exception:  # noqa: BLE001
+                pass
         if h is not None:
             try:
                 h.disconnect(graceful=True, wait_ms=800)
