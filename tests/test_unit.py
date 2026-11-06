@@ -1149,6 +1149,44 @@ def test_merge_drop_total_bukan_tambahan() -> None:
         str(len(bot.world.dropped)))
 
 
+def test_uid_ke_item_id_untuk_pickup() -> None:
+    bagian("7m. Pickup: uid -> item id dari objek yang pernah terlihat")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.items import ItemDatabase
+    from lucifer.protocol import Tank
+    from pathlib import Path
+
+    items = Path(__file__).resolve().parent.parent / "data" / "items.dat"
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    if items.exists():
+        bot.items_db = ItemDatabase.from_file(items)
+    bot.world.dropped.clear()
+    bot.world.last_uid = 0
+    bot._uid_item.clear()
+
+    # Drop Dirt Seed (item id 3). Server mengirim uid=-1 (bukti decode hex).
+    bot._apply_item_change(
+        Tank(type=14, net_id=0xFFFFFFFF, target_net_id=-1, value=3,
+             float_variable=1.0, vector_x=1618.0, vector_y=713.0,
+             object_type=4), b"")
+    cek("drop tercatat uid=1 item_id=3",
+        [(d.uid, d.item_id) for d in bot.world.dropped] == [(1, 3)],
+        str([(d.uid, d.item_id) for d in bot.world.dropped]))
+    cek("uid->item tersimpan", bot._uid_item.get(1) == 3, str(bot._uid_item))
+
+    # Pickup: paket HANYA membawa uid, bukan item id.
+    bot._apply_item_change(Tank(type=14, net_id=2, value=1), b"")
+    cek("objek dihapus dari dunia", not bot.world.dropped,
+        str(bot.world.dropped))
+    log = [p["isi"] for p in bot.packet_log if "DIAMBIL" in p["isi"]]
+    cek("log DIAMBIL menyebut item id yang benar",
+        bool(log) and "item_id=3" in log[-1], str(log[-1:]))
+    cek("log DIAMBIL menyebut Dirt Seed",
+        bool(log) and "Dirt Seed" in log[-1], str(log[-1:]))
+
+
 def test_arti_value_item_change_object() -> None:
     bagian("7l. type 14: arti `value` beda menurut netid")
     from lucifer import nama as N
@@ -1451,7 +1489,7 @@ def main() -> int:
                test_echo_place_kurangi_inventory, test_hit_counter,
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
-               test_arti_value_item_change_object,
+               test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

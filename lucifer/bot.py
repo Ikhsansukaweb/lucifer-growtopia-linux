@@ -368,6 +368,10 @@ class Bot:
         self._place_terakhir_item: int = 0
         self._aksi_ok: dict[tuple[int, int], tuple[str, int, float]] = {}
         self._aksi_tolak: dict[tuple[int, int], tuple[str, int, float]] = {}
+        # uid objek -> item id. Diisi saat drop terlihat, dan TIDAK dihapus
+        # walau objeknya hilang: paket pickup hanya membawa uid, jadi peta ini
+        # satu-satunya cara tahu item apa yang tadi diambil.
+        self._uid_item: dict[int, int] = {}
         # Item terakhir yang jatuh: (px, py, waktu). Dipakai autofarm sebagai
         # bukti blok pecah. Posisi drop TIDAK pas di tile (item menyebar),
         # jadi pencocokan memakai jarak piksel, bukan nomor tile.
@@ -1610,6 +1614,12 @@ class Bot:
                         DroppedItem(item_id=item_id, x=x, y=y,
                                     count=jumlah, uid=uid_asli))
                     self._emit("dropped", uid_asli)
+                # Ingat pasangan uid -> item id (dipakai saat pickup, karena
+                # paket pickup hanya membawa uid).
+                self._uid_item[int(uid_asli)] = int(item_id)
+                if len(self._uid_item) > 512:
+                    for k in list(self._uid_item)[:256]:
+                        self._uid_item.pop(k, None)
                 # Drop di tile X = blok di tile X baru saja pecah. Ini
                 # SATU-SATUNYA bukti pecah yang dikirim server (tidak ada
                 # paket tile-update untuk punch sendiri, dan `TileApplyDamage`
@@ -1630,22 +1640,25 @@ class Bot:
                 # kita sudah tahu sebelumnya; bukan tebakan, server yang
                 # menyatakan objek ini berpindah ke kita.
                 diambil = next((o for o in self.world.dropped if o.uid == uid), None)
+                item_id_diambil = (diambil.item_id if diambil is not None
+                                   else self._uid_item.get(int(uid)))
                 self.world.dropped = [o for o in self.world.dropped if o.uid != uid]
                 self._emit("picked", uid)
                 # Paket pickup HANYA membawa uid, tidak membawa item id.
                 # Item id dicari dari daftar objek yang sudah kita ketahui
                 # (dari paket add_object sebelumnya). Kalau tidak ketemu,
                 # laporkan apa adanya — jangan menebak.
-                if diambil is not None:
-                    nama_item = (self.items_db.name_of(diambil.item_id)
-                                 if self.items_db else f"#{diambil.item_id}")
+                if item_id_diambil is not None:
+                    nama_item = (self.items_db.name_of(item_id_diambil)
+                                 if self.items_db else f"#{item_id_diambil}")
+                    jumlah_ambil = diambil.count if diambil is not None else 1
                     self.catat_paket("in", 0,
-                                     f"DIAMBIL uid={uid} item_id={diambil.item_id}"
-                                     f"({nama_item}) count={diambil.count}")
+                                     f"DIAMBIL uid={uid} item_id={item_id_diambil}"
+                                     f"({nama_item}) count={jumlah_ambil}")
                 else:
                     self.catat_paket("in", 0,
-                                     f"DIAMBIL uid={uid} (item id tidak diketahui "
-                                     f"- objek tidak ada di daftar lokal)")
+                                     f"DIAMBIL uid={uid} (item id belum pernah "
+                                     f"terlihat untuk uid ini)")
                 # JANGAN menambah stok di sini. Stok bertambah dari pesan
                 # resmi `Collected <n> <item>` (lihat `_baca_collected`).
                 # Menambah di dua tempat membuat stok dobel, dan `diambil`
