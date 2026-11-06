@@ -3,8 +3,9 @@
 **API Lua Lucifer V1.8 untuk Growtopia — berjalan native di Linux.**
 
 Klien Growtopia asli (ENet yang dipatch Ubisoft + codec Tank/Variant + CRC32 +
-range coder), mesin skrip Lua lengkap, dan dashboard web. Skrip ditulis dengan
-gaya Lucifer, jadi skrip Lucifer yang sudah ada bisa langsung dipakai.
+range coder), mesin skrip Lua lengkap, dashboard web, **GUI native GTK3**, dan
+dukungan proxy SOCKS5 untuk UDP. Skrip ditulis dengan gaya Lucifer, jadi skrip
+Lucifer yang sudah ada bisa langsung dipakai.
 
 ```
    _                       _  _
@@ -38,7 +39,7 @@ $ make && .venv/bin/python tests/test_integration.py
   ✓ server membalas paket terurai  Fail to login. Please try again in 30 seconds.
 
 == 4. Rantai LENGKAP: skrip Lua -> Bot -> ENet -> server GT ==
-  ✓ items.dat dimuat  15934 item v24
+  ✓ items.dat dimuat  16480 item v27
   ✓ skrip Lua dieksekusi
   ✓ event server sampai ke handler Lua  Fail to login. Please try again in 30 seconds.
   ✓ bot membuat koneksi ENet nyata  213.179.209.175:17047
@@ -73,8 +74,8 @@ game** — bukan bug bot. Buktinya: TCP/443 ke IP game juga timeout, tapi
 `login.growtopiagame.com:443` terbuka. Ganti jaringan (Wi-Fi lain) atau pakai
 VPN/proxy lewat field `proxy` akun.
 
-`items.dat` v24 terbaca sempurna: **15.934 item**, dengan ID asli
-(World Lock = 242, Dirt = 2, Grass Seed = 17, Wrench = 32).
+`items.dat` v27 terbaca sempurna: **16.480 item**, dengan ID asli
+(World Lock = 242, Dirt = 2, Grass Seed = 17, Fist = 18, Wrench = 32).
 
 ---
 
@@ -88,6 +89,12 @@ make probe            # uji handshake ke server Growtopia asli
 ```
 
 Butuh: Python ≥ 3.10, `g++`/`clang++`, `python3-venv`.
+
+Untuk GUI native, tambahan: `gtk3`, `json-glib`, `cmake`.
+
+```bash
+bash deploy/pasang-desktop.sh   # build GUI + pasang ikon + entri menu
+```
 
 ---
 
@@ -313,15 +320,17 @@ lucifer check examples/*.lua        # cek sintaks Lua
 lucifer lua examples/01_hello.lua --connect
 lucifer run                        # bot + skrip + hot reload
 lucifer web --host 0.0.0.0 --port 8787   # dashboard (buka di browser)
-lucifer desktop                    # buka sebagai APLIKASI DESKTOP (jendela sendiri)
+lucifer desktop                    # GUI native GTK3 (jendela sendiri)
 lucifer ltoken --file client_data.txt --save   # ambil ltoken dari proxy debug
 ```
 
 ### Dashboard: login langsung dari UI
 
-Dashboard punya panel **Login Akun** — tidak perlu menyentuh terminal lagi:
+Dashboard web (`lucifer web`) juga punya panel **Login Akun** — tidak perlu
+menyentuh terminal lagi:
 
-1. Jalankan `lucifer desktop` (atau `lucifer web` lalu buka `http://127.0.0.1:8787`).
+1. Jalankan `lucifer web` lalu buka `http://127.0.0.1:8787` (atau pakai GUI
+   native lewat `lucifer desktop`).
 2. Pilih tabnya:
 
    | Tab | Isi | Kapan dipakai |
@@ -350,14 +359,33 @@ dicocokkan.
 
 | Fitur | Alias deltaX | Isi |
 |---|---|---|
-| AutoFarm | `autofarm_start`, `autofarm_item_picker`, `autofarm_target_tile` | panen → ambil → tanam, pakai `hit()`/`collect()`/`place()` |
-| AutoCollect | `autocollectstart`, `auto_collect_radius` | ambil objek jatuh di radius tertentu |
+| AutoFarm | `autofarm_start`, `autofarm_item_picker`, `autofarm_target_tile` | **pecah blok → ambil → taruh blok lagi** di tile yang sama, pakai `hit()`/`collect()`/`place()` |
+| Automation | `automation_start`, `automation_item`, `automation_mode` | **panen tanaman → ambil → tanam bibit** (terpisah dari AutoFarm) |
+| AutoCollect | `autocollectstart`, `auto_collect_radius`, `auto_collect_tile` | ambil objek jatuh di radius, atau hanya di tile terpilih |
 | Spammer | `spammer_config_start`, `spammer_config_texttospam` | chat berkala, urut atau acak |
 | AutoDrop | `cheat_config_fastdrop_active`, `cheat_config_fasttrash_active` | drop/trash item di atas batas jumlah |
+| AutoWrench | `autowrench_start` | wrench tile yang ditandai untuk melihat isinya |
 | FindPath | `findpath_config_blockjump`, `findpath_config_teleport_path` | BFS yang menghitung tile terpasang sebagai penghalang |
 | Replay | `replay_record_active`, `replay_play_active`, `replay_loop` | rekam aksi keluar lalu putar ulang (JSON di `data/replay/`) |
 | Growscan | `cheat_growscan_open` | pindai blok/tanaman/objek jatuh di dunia |
+| ModExit | `modexit_*` | keluar dunia otomatis saat moderator terdeteksi |
 | Chat commands | `cmd_warp`, `cmd_back`, `cmd_finditem`, `cmd_gscan`, `cmd_pullall`, `cmd_alias`, `cmd_bind` | perintah `/...` yang ditangani lokal, tidak dikirim ke server |
+
+AutoFarm dan Automation sengaja dipisah: yang pertama bekerja pada **blok**
+(pecah & taruh balik), yang kedua pada **tanaman** (panen & tanam bibit).
+Mencampurnya membuat bot memecah tanaman yang belum siap panen.
+
+Catatan AutoFarm:
+
+- Sasaran = `target_tile` kalau diisi; kalau kosong, hanya tile dalam
+  **jangkauan 4 tile** (server menolak `tileChange` yang lebih jauh).
+- Blok dipukul **sampai benar-benar pecah** — jumlah pukulan mengikuti
+  `block_health` di items.dat (tiap blok beda), dan konfirmasi diambil dari
+  `SendTileUpdateData` / `SendTileUpdateDataMultiple` (tank type 5/6).
+- Blok baru ditaruh setelah server mengonfirmasi tile kosong, jadi tidak
+  pernah menaruh di atas blok yang masih utuh.
+- Sign, pintu, lock, mailbox, bulletin, dan donation box dilewati — bukan
+  sasaran pecah.
 
 Dipanggil dari Lua dengan nama yang sama (`autofarm_start()`,
 `spammer_add("halo")`, `growscan()`, `command("/warp FARM")`, …), semuanya
@@ -382,21 +410,84 @@ Selain panel login, dashboard punya:
   (`POST /api/script/save`, lalu `run <nama>.lua`).
 
 Endpoint: `GET /api/features`, `GET /api/map`, `POST /api/feature`,
-`POST /api/script/save`.
+`POST /api/script/save`, `GET /api/dialog`.
 
+### Proxy SOCKS5
 
-`lucifer desktop` menjalankan server dashboard di latar lalu membukanya di
-Chrome mode `--app`: jendela sendiri, tanpa address bar dan tab, dengan ikon
-Lucifer di dock. Perintah lain:
+Growtopia butuh **UDP**, jadi proxy TCP-only tidak berguna walaupun lolos tes
+TCP. Dua hal penting:
+
+- `enet_host_use_proxy()` di `enet/enet.so` **rusak** (kirim greeting SOCKS5
+  lalu menutup soket). Karena itu `lucifer/udprelay.py` dipakai: ENet bicara
+  UDP biasa ke `127.0.0.1:<port>`, relay yang membungkus tiap datagram dengan
+  header SOCKS5.
+- `ProxyPool` menyimpan kunci `(host, port, user, passwd)`. Proxy model
+  *rotating gateway* memakai host:port sama untuk ribuan kredensial, dan tiap
+  kredensial keluar lewat IP berbeda — dedupe `host:port` saja membuang hampir
+  semua proxy yang sah.
+
+Uji proxy bertahap: `uji()` (TCP) → `uji_udp()` (DNS lewat UDP ASSOCIATE,
+membuktikan relay benar-benar meneruskan) → `uji_enet()` (handshake ENet ke
+server Growtopia lewat relay yang sama dengan yang dipakai bot).
+
+```bash
+curl -X POST localhost:8787/api/proxy \
+  -d '{"label":"main","proxy":"socks5://user:pass@host:port"}'
+```
+
+### Status bot: level, gems, malady
+
+| Data | Sumber | Catatan |
+|---|---|---|
+| gems | variant `OnSetBux` arg1 | dikirim server tiap gem berubah |
+| level | `add_player_info\|nama\|level\|xp\|xp_next\|` di dialog profil | retail **tidak** mengirim level lewat paket status |
+| malady | `MALADY_*` / `ILLNESS_*` di dialog profil | status sakit kategori Surgeon; kosong = tidak kena |
+
+Level dan malady hanya muncul di dialog hasil **wrench diri sendiri**, jadi
+bot memintanya sekali per world (`action|wrench` netid sendiri). Ada juga
+tombol **Profil** di GUI dan perintah `profil` untuk meminta ulang.
+
+> Jangan tertukar `OnDialogRequest`: markup dialog ada di **argumen index 1**,
+> bukan index 2. Membaca index 2 membuat dialog selalu kosong.
+
+### Aplikasi desktop
+
+`lucifer desktop` menjalankan server dashboard di latar lalu membuka **GUI native
+GTK3** (`desktop/src/*.cpp`) — jendela sendiri, bukan browser. Backend Python
+tetap yang memegang protokol; GUI hanya mengirim JSON lewat loopback HTTP.
+
+Perintah lain:
 
 ```bash
 lucifer desktop --status   # cek server
 lucifer desktop --stop     # matikan server
 lucifer-desktop            # perintah yang sama (launcher .desktop)
+bash deploy/pasang-desktop.sh   # build GUI + pasang ikon + entri menu
 ```
 
-Launcher GNOME-nya dipasang oleh `deploy/install.sh`, jadi **Lucifer Linux**
-juga muncul di daftar aplikasi (Activities → cari "Lucifer").
+Launcher dipasang oleh `deploy/pasang-desktop.sh` dengan `--repo DIR`, jadi
+**Lucifer Linux** muncul di daftar aplikasi (Activities → cari "Lucifer") dan
+backend selalu jalan dari direktori repo (supaya `data/items.dat` kebaca).
+
+### GUI native (GTK3)
+
+Lima tab: **Bots · Executor · Proxy · Database · Settings**.
+
+| Bagian | Isi |
+|---|---|
+| Daftar bot | kolom PILIH (centang) · BOT · NAMA · **LEVEL** · **MALADY** · PING · STATUS · PROXY · DUNIA · POSISI · GEMS |
+| Panel kiri | Connect/Disconnect (+Semua), panah gerak, Warp, Respawn, Collect, **Profil**, kelola akun |
+| Detail bot | Fitur (13 kategori skema deltaX) · Peta · Console · Chat · Inventaris · Paket · Info |
+| Proxy | pool SOCKS5, uji UDP relay + ENet handshake sungguhan |
+| Database | cari item + sprite 24×24 |
+
+Window memakai `gdk_monitor_get_workarea` + `gtk_window_maximize`, tanpa
+headerbar server-side (ramah Hyprland); minimize/close ada di toolbar.
+
+**Pilih banyak bot**: klik baris = pilih, klik 2× = buka detail. Centang di
+kolom PILIH adalah sumber kebenaran (`std::set<std::string> dipilih_`), jadi
+Connect/Warp/Respawn bisa menyasar banyak bot sekaligus.
+
 
 ---
 
@@ -475,6 +566,35 @@ runThread(pesan_berkala, "Bot aktif", 10000)
 | `05_http_webhook.lua` | `HttpClient`, `Webhook` Discord, `RTVAR`, file IO |
 | `06_pathfinding.lua` | `getPath`/`moveTile`, `collect`, hitung blok di dunia |
 | `07_login_google.lua` | semua jenis login: LEGACY/GROWID/GOOGLE/TOKEN/APPLE |
+| `08_delta_features.lua` | autofarm/autocollect/spammer/findpath/replay lewat alias deltaX |
+
+---
+
+## Uji
+
+Tanpa jaringan (cepat, dipakai tiap perubahan):
+
+```bash
+.venv/bin/python tests/test_unit.py      # 278 lulus
+.venv/bin/python tests/test_features.py  # 97 lulus
+.venv/bin/python tests/test_modmenu.py   # 347 lulus
+```
+
+Semua memakai `unittest` bawaan Python — tidak perlu pytest. Skrip mencetak
+`lulus: N gagal: 0` dan keluar dengan kode ≠ 0 kalau ada yang gagal.
+
+Uji nyata ke server Growtopia asli (butuh jaringan):
+
+```bash
+.venv/bin/python tests/test_integration.py
+```
+
+Isi yang diuji tanpa jaringan: codec Tank/Variant, parser items.dat dan
+dunia, semua aksi bot beserta isi paket yang dikirim (`hit` = type 3 value 18,
+`place` = type 3 value item, `collectObject` = type 11 dengan posisi piksel),
+parser `SendTileUpdateDataMultiple`, `ModifyItemInventory`, filter malady,
+pool proxy, dan siklus autofarm (pecah → taruh) dengan server yang diam
+maupun yang mengonfirmasi.
 
 ---
 
@@ -485,20 +605,27 @@ lucifer-linux/
 ├── enet/                 # ENet single-header, dipatch Growtopia
 ├── lucifer/
 │   ├── enet.py           # binding ctypes ENet (patch new-packet/CRC32/range coder)
-│   ├── protocol.py       # codec Tank, Variant, VariantList, teks
+│   ├── protocol.py       # codec Tank, Variant, VariantList, teks + tabel 75 action
 │   ├── hash.py           # Growtopia hash (TLSH) untuk login
-│   ├── items.py          # pembaca items.dat (15.934 item v24)
-│   ├── world.py          # parser dunia + flag tile
-│   ├── account.py        # login: legacy, growid, google, apple, ubi, token
+│   ├── items.py          # pembaca items.dat (16.480 item v27)
+│   ├── world.py          # parser dunia, tile update (type 5/6), flag tile
 │   ├── bot.py            # bot: koneksi, state, aksi (say/warp/place/hit/...)
-│   ├── features.py       # otomasi gaya deltaX: autofarm/collect/spam/replay/growscan/cmd
+│   ├── features.py       # otomasi gaya deltaX + SKEMA_FITUR (13 kategori, 158 kontrol)
 │   ├── lua_api.py        # API Lua Lucifer V1.8 lengkap
+│   ├── compat_deltax.py  # jembatan nama fungsi Lua gaya deltaX
+│   ├── proxy.py          # SOCKS5: uji TCP/UDP/ENet
+│   ├── proxypool.py      # pool proxy (kunci host+port+user+passwd)
+│   ├── udprelay.py       # jembatan UDP lokal <-> SOCKS5 UDP ASSOCIATE
 │   ├── runner.py         # runner + hot reload
 │   ├── cli.py            # perintah `lucifer`
 │   └── web.py            # dashboard web
+├── desktop/              # GUI native GTK3 (C++)
+│   └── src/              # ui.cpp (tampilan), data.cpp (handler), http.cpp (klien)
+├── deploy/               # pasang-desktop.sh, install.sh, ikon, .desktop, service
+├── android/push/         # APK kecil pengirim ltoken dari HP (Java)
 ├── examples/             # skrip contoh .lua (siap pakai)
 ├── scripts/              # skrip kamu sendiri
-├── tests/                # uji nyata ke server Growtopia asli
+├── tests/                # uji unit + uji nyata ke server Growtopia asli
 ├── Makefile
 └── requirements.txt
 ```
