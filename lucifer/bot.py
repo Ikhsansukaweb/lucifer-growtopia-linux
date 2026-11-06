@@ -359,6 +359,15 @@ class Bot:
         self.malady = ""
         # Level hanya dikirim server di dialog profil; minta sekali per sesi.
         self._profil_diminta = False
+        # Konfirmasi aksi per tile dari echo `TileChangeRequest`:
+        #   (x,y) -> ("place", item_id, waktu)  place diterima
+        #   (x,y) -> ("tolak", item_id, waktu)  place ditolak server
+        # Tile yang terakhir kita place (dipakai memasangkan balasan server
+        # berupa `play_sfx audio/cant_place_tile.wav` ke tile yang tepat).
+        self._place_terakhir: Optional[tuple[int, int]] = None
+        self._place_terakhir_item: int = 0
+        self._aksi_ok: dict[tuple[int, int], tuple[str, int, float]] = {}
+        self._aksi_tolak: dict[tuple[int, int], tuple[str, int, float]] = {}
         # Item terakhir yang jatuh: (px, py, waktu). Dipakai autofarm sebagai
         # bukti blok pecah. Posisi drop TIDAK pas di tile (item menyebar),
         # jadi pencocokan memakai jarak piksel, bukan nomor tile.
@@ -767,6 +776,19 @@ class Bot:
     def _handle_packet(self, raw: bytes) -> None:
         mtype, payload = P.parse_packet(raw)
 
+        # Rekam SEMUA paket masuk apa adanya (tipe pesan + payload) supaya
+        # perilaku server bisa dibuktikan, bukan diasumsikan. Hanya aktif
+        # dengan LUCIFER_DUMP=1.
+        if os.environ.get("LUCIFER_DUMP"):
+            try:
+                d = Path("/tmp/opencode")
+                d.mkdir(parents=True, exist_ok=True)
+                with (d / "semua_masuk.log").open("a") as f:
+                    f.write(f"{time.strftime('%H:%M:%S')} msg={int(mtype)} "
+                            f"len={len(payload)} {payload[:64].hex()}\n")
+            except Exception:  # noqa: BLE001
+                pass
+
         # Jurnal debug: catat semua paket masuk apa adanya.
         if mtype == M.GamePacket and len(payload) >= P.TANK_SIZE:
             try:
@@ -790,6 +812,11 @@ class Bot:
             _f = P.decode_text(payload)
             _nama = _f.get("action") or _f.get("eventName") or ""
             self.catat_paket("in", mtype, f"{_nama} | {str(_f)[:300]}")
+            # `play_sfx` membawa jawaban server untuk aksi kita. Bukti dari
+            # jurnal paket nyata: place yang ditolak dibalas
+            # `audio/cant_place_tile.wav`. Ini konfirmasi RESMI, bukan tebakan.
+            if _nama == "play_sfx":
+                self._on_play_sfx(_f.get("file", ""))
         else:
             self.catat_paket("in", mtype, f"{len(payload)} B")
 
@@ -1200,6 +1227,46 @@ class Bot:
             return
         self._hit_tiles[key] = self._hit_tiles.get(key, 0) + 1
 
+    def _on_play_sfx(self, file: str) -> None:
+        """Terjemahkan suara balasan server jadi status aksi.
+
+        Bukti (jurnal paket asli):
+            out type=3 tile=(48,23) value=2  -> PLACE
+            in  play_sfx audio/cant_place_tile.wav     -> DITOLAK
+
+        Tile yang terakhir kita place disimpan di `_place_terakhir`, jadi
+        suara ini bisa dipasangkan ke tile yang tepat.
+        """
+        f = (file or "").lower()
+        tile = self._place_terakhir
+        if not tile:
+            return
+        if "cant_place_tile" in f:
+            item = self._place_terakhir_item
+            self._aksi_tolak[tile] = ("place", item, time.time())
+            self.catat_paket("in", 0,
+                             f"PLACE DITOLAK server di tile={tile} "
+                             f"item={item} (cant_place_tile)")
+            self._emit("place_ditolak", tile)
+            self._place_terakhir = None
+
+    def reset_aksi(self, x: int, y: int) -> None:
+        """Hapus catatan konfirmasi lama sebelum mengirim aksi baru."""
+        self._aksi_ok.pop((int(x), int(y)), None)
+        self._aksi_tolak.pop((int(x), int(y)), None)
+
+    def bersihkan_aksi(self, x: int, y: int) -> None:
+        self.reset_aksi(x, y)
+
+    def place_diterima(self, x: int, y: int, item: int) -> bool:
+        """Server sudah meng-echo place untuk tile ini dengan item tersebut."""
+        rec = self._aksi_ok.get((int(x), int(y)))
+        return bool(rec and rec[0] == "place" and rec[1] == int(item))
+
+    def place_ditolak(self, x: int, y: int, item: int) -> bool:
+        rec = self._aksi_tolak.get((int(x), int(y)))
+        return bool(rec and rec[1] == int(item))
+
     def ada_drop_dekat(self, x: int, y: int, radius_px: float = 40.0,
                        dalam_detik: float = 3.0) -> bool:
         """Apakah ada item jatuh di dekat tile ini baru-baru ini?
@@ -1259,6 +1326,8 @@ class Bot:
                         parent=lama.parent, flags=0)
             self.world.update_tile(self.world.index_of(x, y), baru)
             self._emit("tile_update", baru)
+            # Konfirmasi NYATA: server meng-echo place ini ke kita.
+            self._aksi_ok[(x, y)] = ("place", item_id, time.time())
         if self.inventory.getItemCount(item_id) <= 0:
             return
         self.inventory.kurangi(item_id, 1)
@@ -1986,17 +2055,19 @@ class Bot:
         tile (seperti library deltaX), selain itu posisi pemain.
         """
         px, py = float(x * 32), float(y * 32)
-        t = self.world.tile(int(x), int(y))
-        # Aturan posisi dari `library.lua:tileChange` deltaX: tile KOSONG atau
-        # BIBIT memakai posisi tile, selain itu posisi pemain. Tile berisi
-        # blok ditaruh/dipukul dari posisi pemain — memakai posisi tile membuat
-        # server menganggapnya di luar jangkauan dan menolak diam-diam.
-        if t is None or not self.local:
-            ox, oy = px, py
-        elif t.fg == 0 or t.fg % 2 == 1:
-            ox, oy = px, py
-        else:
+        # Posisi paket = posisi PEMAIN, selalu. Bukan posisi tile.
+        #
+        # Bukti dari paket klien asli (Growtopia HP) yang berhasil:
+        #   place tile=(52,26) pos=(1606,834)  -> 52*32=1664, jadi pos PEMAIN
+        #   pukul tile=(42,26) pos=(1376,834)  -> 42*32=1344, jadi pos PEMAIN
+        #
+        # Versi lama memakai posisi tile untuk tile kosong/bibit (mengikuti
+        # `library.lua` deltaX). Server menolaknya dengan
+        # `audio/cant_place_tile.wav`.
+        if self.local is not None:
             ox, oy = self.local.posx, self.local.posy
+        else:
+            ox, oy = px, py
         # Paket State (type 0) lebih dulu: ini yang membuat TANGAN bergerak.
         # Tanpa ini bot terlihat diam lalu blok tiba-tiba terpukul.
         # Nilai `state` dari `library.lua:tileChange` deltaX:
@@ -2029,6 +2100,8 @@ class Bot:
 
     def place(self, x: int, y: int, item: int) -> bool:
         """Pasang blok/bibit di tile (value = item id)."""
+        self._place_terakhir = (int(x), int(y))
+        self._place_terakhir_item = int(item)
         self._emit("place", (x, y, item))
         return self._tile_change(x, y, int(item))
 

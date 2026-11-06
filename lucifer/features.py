@@ -520,130 +520,90 @@ class AutoFarm:
     def _dekati(self, t: Tile) -> bool:
         return dekati(self.bot, t, self.JANGKAU)
 
-    def _pukul_sampai_pecah(self, t: Tile) -> bool:
-        """Pukul tile sampai server MENGONFIRMASI blok hilang.
+    # Berapa lama menunggu `TileApplyDamage` untuk satu pukulan (detik).
+    # Satu RTT ke server Growtopia ~0,3-1 detik; 1,5 detik cukup longgar.
+    TUNGGU_ACK = 1.5
+    # Berapa kali berturut-turut tanpa ack sebelum blok dianggap pecah.
+    MANDDEK_TOLERAN = 2
 
-        Tiap blok butuh jumlah pukulan berbeda (`block_health` di items.dat),
-        jadi jumlah pukulan tetap salah: blok keras tidak pecah, blok lunak
-        dipukul berlebihan. Konfirmasi datang lewat `SendTileUpdateData` /
-        `SendTileUpdateDataMultiple` (type 5/6) yang mengubah `world`.
+    def _pukul_sekali_tunggu_ack(self, t: Tile) -> bool:
+        """Kirim SATU pukulan, tunggu `TileApplyDamage` untuk tile ini.
 
-        Batas aman: `block_health` + 4 pukulan, dan maksimal ~4 detik.
+        Mengembalikan True kalau server membalas ack (pukulan diterima),
+        False kalau tidak ada balasan dalam batas waktu.
         """
-        # Jumlah pukulan nyata = block_health / 6. Growtopia mengalikan
-        # hit-count dengan 6 saat menyimpan items.dat, lalu membaginya lagi
-        # saat dipakai (Gurotopia items.cpp:102:
-        #   `if (item.hits != 0) item.hits /= 6; // break hit is multiplied by 6`).
-        # Memakai block_health mentah (18 untuk Dirt) membuat bot memukul
-        # 6x lebih banyak dari perlu — itu sebab "break 12 kali" dan place
-        # yang jalan sebelum blok benar-benar pecah.
-        db = getattr(self.bot, "items_db", None)
+        b = self.bot
+        sebelum = b.hit_count(t.x, t.y)
+        b.hit(t.x, t.y)
+        t0 = time.time()
+        while time.time() - t0 < self.TUNGGU_ACK:
+            if self._s._stop.is_set() or b.status != BotStatus.online:
+                return False
+            if b.hit_count(t.x, t.y) > sebelum:
+                return True
+            # Server sudah menyatakan tile kosong.
+            sekarang = b.world.tile(t.x, t.y)
+            if sekarang is not None and sekarang.fg == 0:
+                return True
+            if _tunggu(self._s._stop, 0.05):
+                return False
+        return False
+
+    def _pukul_sampai_pecah(self, t: Tile) -> bool:
+        """Pukul SATU PER SATU sampai server berhenti membalas ack.
+
+        Urutan yang diikuti (sesuai permintaan & perilaku klien asli):
+          1. kirim satu pukulan
+          2. tunggu `TileApplyDamage` untuk tile itu
+          3. kalau dibalas -> ulangi (blok masih ada)
+          4. kalau tidak dibalas N kali berturut -> blok sudah pecah
+          5. verifikasi: tile di dunia lokal harus kosong (fg == 0)
+
+        Tidak ada spam: tiap paket menunggu balasan sebelum lanjut. Ini juga
+        membuat laju kirim otomatis mengikuti kemampuan server.
+        """
+        b = self.bot
+        b.reset_hit(t.x, t.y)
+        terkirim = 0
+        mandek = 0
+        # Pengaman: jangan pernah melebihi perkiraan block_health + kelonggaran.
+        # Ini BUKAN target (blok bisa pecah lebih awal karena ack mandek),
+        # hanya pagar supaya tile aneh tidak dipukul tanpa henti.
+        db = getattr(b, "items_db", None)
         item = db.get(t.fg) if db is not None else None
         health = int(getattr(item, "block_health", 0) or 0) if item else 0
-        butuh = max(1, health // 6) if health else 3
-        # Konfirmasi datang dari `TileApplyDamage` (type 8) yang dikirim
-        # server untuk SETIAP pukulan yang diterima (Gurotopia
-        # `database/world.cpp:tile_apply_damage`). Server retail TIDAK
-        # mengirim type 5/6 untuk blok yang kita pukul sendiri, jadi tanpa
-        # penghitung ini bot memukul terus tanpa tahu kapan berhenti.
-        #
-        # Beda dengan versi sebelumnya: hitungan di sini dipakai untuk
-        # MEMUTUSKAN berhenti, lalu dunia lokal diubah sendiri (seperti klien
-        # asli yang langsung menghapus blok dari tampilan). Kalau server
-        # ternyata mengirim type 5/6, nilai server yang menang.
-        self.bot.reset_hit(t.x, t.y)
-        # PENTING: yang dihitung adalah ACK dari server (`TileApplyDamage`),
-        # bukan jumlah paket yang kita kirim. Sebagian pukulan ditolak server
-        # (terlalu cepat / tile sibuk), jadi mengirim 3 paket belum tentu
-        # menghasilkan 3 ack. Versi lama berhenti setelah mengirim `butuh`
-        # paket, sehingga blok yang butuh 3 ack tapi hanya dapat 2 tidak
-        # pernah dianggap pecah — bot memukul terus dan peta tidak berubah.
-        # `TileApplyDamage` HANYA dikirim server kalau tile masih berisi blok
-        # (Gurotopia `tile_apply_damage` menaikkan `block.hits[]`). Kalau
-        # setelah beberapa pukulan tidak ada ack sama sekali, artinya tile itu
-        # SUDAH KOSONG di server — peta lokal yang tertinggal. Bukti dari
-        # jurnal paket: 200+ punch ke (48,23) menghasilkan NOL type 8,
-        # sementara punch ke (49,22) langsung dibalas.
-        # Konfirmasi memakai `TileApplyDamage` (tank type 8) — paket resmi
-        # server untuk SETIAP pukulan yang diterima (Gurotopia
-        # `database/world.cpp:tile_apply_damage` menaikkan `block.hits[]`).
-        #
-        # JANGAN memakai drop (`ItemChangeObject`) sebagai bukti: banyak blok
-        # tidak menjatuhkan apa pun saat pecah, jadi sinyalnya tidak selalu ada.
-        # Jumlah pukulan TIDAK bisa dipatok dari items.dat. Bukti dari jurnal
-        # paket: Dirt (`block_health=18`, jadi 18/6=3) ternyata pecah pada
-        # ack ke-2. Menuntut angka pasti membuat bot memukul tile yang sudah
-        # kosong belasan kali — itu penyebab siklus jadi 6-20 detik.
-        #
-        # Yang dipakai: ack (`TileApplyDamage`) harus TERUS BERTAMBAH selama
-        # kita memukul. Begitu berhenti bertambah, blok sudah pecah. Cara ini
-        # tidak bergantung pada pembagi `block_health`.
-        batas = butuh * 4 + 6      # pengaman agar tidak memukul selamanya
-        terkirim = 0
-        ack_terakhir = 0
-        mandek = 0
+        batas = (max(1, health // 6) if health else 6) + 8
+
         while terkirim < batas:
-            if self._s._stop.is_set() or self.bot.status != BotStatus.online:
+            if self._s._stop.is_set() or b.status != BotStatus.online:
+                return False
+            if not self._dalam_jangkau(t):
                 return False
 
-            ack = self.bot.hit_count(t.x, t.y)
-            if ack > ack_terakhir:
-                ack_terakhir = ack
-                mandek = 0
-            elif terkirim > 0:
-                mandek += 1
-
-            # Sudah ada ack, lalu berhenti bertambah 3 pukulan berturut-turut
-            # -> blok pecah.
-            if ack_terakhir > 0 and mandek >= 3:
-                self._terapkan_kosong(t)
-                return True
-
-            # Tidak ada ack sama sekali setelah 5 pukulan -> tile memang
-            # sudah kosong (peta lokal tertinggal).
-            if terkirim >= 5 and ack_terakhir == 0:
-                self._terapkan_kosong(t)
-                return True
-
-            self.bot.hit(t.x, t.y)
+            dibalas = self._pukul_sekali_tunggu_ack(t)
             terkirim += 1
-            if not self.show_punch:
-                if _tunggu(self._s._stop, self._jeda_aksi(self.punch_delay)):
-                    return False
 
-            # Server kadang menyatakan tile kosong langsung.
-            sekarang = self.bot.world.tile(t.x, t.y)
+            # Konfirmasi pecah HANYA dari peta dunia yang dikirim server.
+            sekarang = b.world.tile(t.x, t.y)
             if sekarang is not None and sekarang.fg == 0:
                 return True
 
-        # Beri kesempatan ack terakhir datang (satu RTT).
-        for _ in range(6):
-            if self._s._stop.is_set() or self.bot.status != BotStatus.online:
-                break
-            if self.bot.hit_count(t.x, t.y) > ack_terakhir:
-                ack_terakhir = self.bot.hit_count(t.x, t.y)
-                mandek = 0
-            if _tunggu(self._s._stop, 0.1):
-                break
-        if ack_terakhir > 0:
-            self._terapkan_kosong(t)
-            return True
-        return False
+            if dibalas:
+                mandek = 0          # server masih menerima pukulan
+            else:
+                mandek += 1
+                # Server berhenti membalas = tile ini tidak bisa dipukul lagi
+                # (kosong menurut server, atau bukan hak kita). Berhenti, tapi
+                # JANGAN mengubah peta sendiri.
+                if mandek >= self.MANDDEK_TOLERAN:
+                    break
 
-    def _terapkan_kosong(self, t: Tile) -> None:
-        """Hapus blok dari dunia lokal setelah jumlah pukulan terpenuhi.
-
-        Ini meniru klien asli: tampilan blok hilang segera setelah hit
-        terakhir, tanpa menunggu paket update tile (yang sering tidak datang
-        untuk blok yang kita pukul sendiri).
-        """
-        w = self.bot.world
-        lama = w.tile(t.x, t.y)
-        if lama is None:
-            return
-        baru = Tile(x=t.x, y=t.y, fg=0, bg=lama.bg)
-        w.update_tile(w.index_of(t.x, t.y), baru)
-        self.bot._emit("tile_update", baru)
+        # JANGAN mengubah peta lokal sendiri. Bukti nyata: bot pernah
+        # "mengosongkan" tile yang di server MASIH berisi blok, lalu server
+        # membalas `audio/cant_place_tile.wav` — place ditolak. Peta lokal
+        # hanya boleh berubah dari paket server.
+        sekarang = b.world.tile(t.x, t.y)
+        return sekarang is not None and sekarang.fg == 0
 
     # -- jeda ------------------------------------------------------------- #
     # Server Growtopia membatasi laju `TileChangeRequest`. Bukti dari jurnal
@@ -734,8 +694,45 @@ class AutoFarm:
                 break
         return total
 
+    # Berapa pukulan tanpa ack sebelum dianggap "sedang diproses server".
+    # Nilai ini BUKAN jumlah pukulan untuk memecah blok — hanya batas sabar.
+    SABAR_ACK = 3
+
+    def _tunggu_konfirmasi_place(self, x: int, y: int, item: int,
+                                 batas_detik: float = 2.0) -> str:
+        """Tunggu server menyatakan place BERHASIL.
+
+        Konfirmasi = echo `TileChangeRequest` dengan `value == item` di tile
+        yang sama (terbukti ada di jurnal paket: `in netid=13 value=2`).
+
+        Mengembalikan "ok" | "tolak" | None (belum ada kabar).
+        """
+        b = self.bot
+        t0 = time.time()
+        while time.time() - t0 < batas_detik:
+            if self._s._stop.is_set() or b.status != BotStatus.online:
+                return None
+            # Peta lokal sudah berisi item ini -> server menyatakan terpasang.
+            t = b.world.tile(x, y)
+            if (t is not None and t.fg == item) or b.place_diterima(x, y, item):
+                b.bersihkan_aksi(x, y)
+                return "ok"
+            if b.place_ditolak(x, y, item):
+                b.bersihkan_aksi(x, y)
+                return "tolak"
+            if _tunggu(self._s._stop, 0.05):
+                return None
+        return None
+
     def taruh(self) -> int:
-        """Taruh blok lagi di tile bekas pecahan (autofarm_do_place)."""
+        """Taruh blok SATU PER SATU, tunggu konfirmasi server tiap tile.
+
+        Tidak ada spam: satu `place` dikirim, lalu menunggu echo
+        `TileChangeRequest` untuk tile itu. Kalau server menolak, tile
+        dilewati (tidak diulang terus). Kalau tidak ada kabar sama sekali
+        dalam 2 detik, tile dilewati juga — lebih baik lanjut ke tile lain
+        daripada mengulang paket yang tak pernah diproses.
+        """
         blok = self.block_id or self._blok_terakhir
         if not self.do_place or not blok:
             return 0
@@ -743,21 +740,23 @@ class AutoFarm:
         for t in self._urut_dekat(self.kosong_siklus()):
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
-            # Stok dibaca ULANG tiap tile: `ModifyItemInventory`/echo place
-            # bisa menurunkan stok di tengah loop, dan stok yang dibaca sekali
-            # di awal membuat bot mengirim place melebihi yang dimiliki.
             if self.bot.inventory.getItemCount(blok) <= 0:
                 break
-            # Kalau tile di luar jangkauan, DEKATI dulu. Versi lama langsung
-            # `continue` sehingga tile jauh tidak pernah ditaruh sama sekali.
             if not self._dalam_jangkau(t) and not self._hampiri_jika_jauh():
                 continue
             if not self._dalam_jangkau(t):
                 continue
+
+            self.bot.reset_aksi(t.x, t.y)
             self.bot.place(t.x, t.y, blok)
-            self._baru_kosong.discard((t.x, t.y))
-            n += 1
-            self.ditaruh_total += 1
+            hasil = self._tunggu_konfirmasi_place(t.x, t.y, blok)
+            if hasil == "ok":
+                self._baru_kosong.discard((t.x, t.y))
+                n += 1
+                self.ditaruh_total += 1
+            else:
+                # "tolak" / None: jangan ulangi tile ini di siklus yang sama.
+                self._baru_kosong.discard((t.x, t.y))
             if _tunggu(self._s._stop, self._jeda_aksi(self.place_delay)):
                 break
         return n
@@ -805,6 +804,27 @@ class AutoFarm:
         # `pecah()` (yang dipanggil berulang), tile yang sudah pecah di
         # putaran sebelumnya hilang dari daftar dan tidak pernah ditaruh lagi.
         self._baru_kosong = set()
+
+        # Kalau di tile sasaran SUDAH ada blok yang kita farm, langsung mode
+        # BREAK. Jangan menaruh blok baru di atas blok yang ada: paket place
+        # akan ditolak server dan siklus jadi lambat.
+        if self.do_break and self.siap_pecah():
+            # lompat langsung ke tahap pecah (lewati place di siklus ini)
+            dipecah = 0
+            for _ in range(3):
+                n = self.pecah()
+                dipecah += n
+                if n == 0:
+                    break
+            diambil = self.ambil()
+            hasil = {
+                "dibuang": dibuang,
+                "dipecah": dipecah,
+                "diambil": diambil,
+                "ditaruh": self.taruh(),
+            }
+            self.siklus.append(hasil["dipecah"] + hasil["ditaruh"])
+            return hasil
         dipecah = 0
         for _ in range(3):
             n = self.pecah()

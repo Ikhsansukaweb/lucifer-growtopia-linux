@@ -204,8 +204,10 @@ _j9 = []
 
 def _hit_pecah(x, y):
     _j9.append(("hit", x, y))
-    # Server baru mengonfirmasi blok hilang setelah pukulan ke-3.
-    if sum(1 for a in _j9 if a[0] == "hit") >= 3:
+    n = sum(1 for a in _j9 if a[0] == "hit")
+    # Server membalas ack selama blok ada, lalu menghapusnya dari dunia.
+    b9._apply_damage(type("T", (), {"int_x": x, "int_y": y, "value": 6})())
+    if n >= 3:
         t = b9.world.tile(x, y)
         t.fg, t.flags, t.extra_type = 0, 0, 0
     return True
@@ -214,12 +216,15 @@ def _hit_pecah(x, y):
 def _place9(x, y, i):
     _j9.append(("place", x, y, i))
     b9.world.tile(x, y).fg = i
+    b9._aksi_ok[(x, y)] = ("place", i, 0.0)   # server meng-echo place
     return True
 
 
 b9.hit, b9.place = _hit_pecah, _place9
 h9 = af9.satu_siklus()
-cek("hit diulang sampai blok pecah (3x)", [a[0] for a in _j9].count("hit") == 3,
+# Blok dianggap pecah saat ack berhenti datang (bukan jumlah pasti).
+# Server hanya membalas ack selama blok masih ada.
+cek("hit berhenti saat ack mandek", 1 <= [a[0] for a in _j9].count("hit") <= 6,
     str(_j9))
 cek("pecah dilaporkan", h9["dipecah"] == 1, str(h9))
 cek("taruh SETELAH pecah", _j9[-1][0] == "place", str(_j9))
@@ -244,15 +249,25 @@ b17.place = lambda x, y, i: True
 
 def _hit17(x, y):
     _h17.append(1)
-    # Server membalas ack HANYA selama blok masih ada. Setelah 2 pukulan
-    # blok pecah, jadi pukulan berikutnya tidak dibalas (perilaku nyata
-    # dari jurnal paket: Dirt pecah di ack ke-2).
+    # Server membalas ack selama blok ada, lalu menghapusnya dari dunia
+    # (satu-satunya sumber kebenaran: peta dari server).
     if len(_h17) <= 2:
         b17._apply_damage(type("T", (), {"int_x": x, "int_y": y, "value": 6})())
+    else:
+        b17.world.tile(x, y).fg = 0
     return True
 
 
 b17.hit = _hit17
+
+
+def _place17(x, y, i):
+    # Server meng-echo place: ini konfirmasi yang ditunggu taruh().
+    b17._aksi_ok[(x, y)] = ("place", i, 0.0)
+    return True
+
+
+b17.place = _place17
 h17 = af17.satu_siklus()
 # Blok pecah = ack berhenti bertambah. Server hanya membalas ack untuk
 # pukulan yang benar-benar diterima, jadi hitungan ack tak bisa dipatok.
@@ -278,10 +293,13 @@ _j10 = []
 b10.hit = lambda x, y: (_j10.append("hit"), True)[1]
 b10.place = lambda x, y, i: (_j10.append("place"), True)[1]
 h10 = af10.satu_siklus()
-cek("nol ack -> tile dianggap kosong", h10["dipecah"] == 1, str(h10))
-cek("nol ack -> berhenti memukul (<=6)", len([a for a in _j10 if a == "hit"]) <= 6,
+# Nol ack = server tidak menyatakan apa pun. Peta lokal TIDAK boleh diubah
+# sendiri (dulu bot "mengosongkan" tile yang di server masih berisi, lalu
+# place ditolak `cant_place_tile`). Jadi tidak ada place.
+cek("nol ack -> tidak mengarang tile kosong", h10["dipecah"] == 0, str(h10))
+cek("nol ack -> berhenti memukul (<=8)", len([a for a in _j10 if a == "hit"]) <= 8,
     str(len([a for a in _j10 if a == "hit"])))
-cek("nol ack -> place dijalankan", "place" in _j10, str(_j10))
+cek("nol ack -> tidak place", "place" not in _j10, str(_j10))
 
 # Server MENGIRIM ack tapi tile tidak pernah kosong: harus berhenti di batas,
 # bukan memukul selamanya.
@@ -329,7 +347,8 @@ def _hit11(x, y):
 b11.hit = _hit11
 b11.place = lambda x, y, i: True
 af11.satu_siklus()
-cek("Dirt pecah dalam 3 pukulan", len(_h) == 3, f"{len(_h)} pukulan")
+# Blok pecah saat ack berhenti, bukan pada angka block_health/6 tertentu.
+cek("berhenti setelah ack mandek", len(_h) <= 6, f"{len(_h)} pukulan")
 
 # Tanpa items_db: fallback 3 pukulan, bukan 10+.
 b12 = bot_kosong()
@@ -404,7 +423,15 @@ af15.collect, af15.punch_delay, af15.place_delay = False, 1, 1
 b15.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
 _taruh15 = []
 b15.hit = lambda x, y: True
-b15.place = lambda x, y, i: (_taruh15.append((x, y, i)), True)[1]
+
+
+def _place15(x, y, i):
+    _taruh15.append((x, y, i))
+    b15._aksi_ok[(x, y)] = ("place", i, 0.0)   # server meng-echo
+    return True
+
+
+b15.place = _place15
 h15 = af15.satu_siklus()
 cek("tile kosong dari awal tetap ditaruh", _taruh15 == [(3, 3, 2)], str(_taruh15))
 cek("ditaruh_total naik", h15["ditaruh"] == 1, str(h15))

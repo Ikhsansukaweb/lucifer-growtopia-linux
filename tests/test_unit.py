@@ -1098,6 +1098,47 @@ def test_proxypool_kredensial_unik() -> None:
             hapus["dihapus"] == 5 and hapus["total"] == 0, str(hapus))
 
 
+def test_posisi_tidak_memindah_bot() -> None:
+    bagian("7i. tileChange memakai posisi PEMAIN (bot tidak ikut geser)")
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 60, 60
+    for y in range(60):
+        for x in range(60):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=0))
+    bot.world = w
+    # Pemain berdiri di tile (49,23) = piksel (1581,738), menaruh di (52,23).
+    bot.local = Player(netid=1, name="uji", posx=1581.0, posy=738.0)
+
+    out = []
+    bot.send_raw = lambda pkt, ext=b"": (out.append(pkt), True)[1]  # type: ignore[method-assign]
+    bot.place(52, 23, 2)
+
+    kirim = [p for p in out if int(p.type) in (0, 3)]
+    cek("ada paket State + TileChange", len(kirim) == 2,
+        str([int(p.type) for p in kirim]))
+    for p in kirim:
+        cek(f"type={int(p.type)} pos = posisi pemain (1581,738)",
+            abs(p.vector_x - 1581.0) < 0.5 and abs(p.vector_y - 738.0) < 0.5,
+            f"pos=({p.vector_x:.0f},{p.vector_y:.0f})")
+        cek(f"type={int(p.type)} tile tetap (52,23)",
+            p.int_x == 52 and p.int_y == 23, f"tile=({p.int_x},{p.int_y})")
+
+    # Bukti pembanding dari klien asli (Growtopia HP):
+    #   in type=3 tile=(52,23) pos=(1581,738) value=2  -> PLACE berhasil
+    tc = [p for p in kirim if int(p.type) == 3][0]
+    cek("identik dengan paket HP",
+        tc.int_x == 52 and tc.int_y == 23 and abs(tc.vector_x - 1581.0) < 0.5
+        and int(tc.value) == 2,
+        f"tile=({tc.int_x},{tc.int_y}) pos=({tc.vector_x:.0f},{tc.vector_y:.0f}) "
+        f"value={tc.value}")
+
+
 def test_echo_place_kurangi_inventory() -> None:
     bagian("7g. Echo TileChangeRequest (place) mengurangi stok")
     from lucifer.account import Account
@@ -1309,6 +1350,7 @@ def main() -> int:
                test_proxypool_kredensial_unik, test_malady_dari_dialog,
                test_modify_inventory,
                test_echo_place_kurangi_inventory, test_hit_counter,
+               test_posisi_tidak_memindah_bot,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):
