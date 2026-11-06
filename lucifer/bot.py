@@ -1253,16 +1253,18 @@ class Bot:
         if not teks.lower().startswith("collected "):
             return False
         sisa = teks[len("collected "):].strip()
-        # buang sisa rarity di belakang
-        potong = sisa.split("Rarity")[0].strip().rstrip(".")
-        bagian = potong.split(None, 1)
+        # Buang sisa warna/backtick dan bagian rarity.
+        # Contoh nyata: "Collected 24 Dirt``. Rarity: 1``"
+        sisa = sisa.split("Rarity")[0]
+        sisa = sisa.replace("`", "").strip().rstrip(".").strip()
+        bagian = sisa.split(None, 1)
         if len(bagian) < 2:
             return False
         try:
             jumlah = int(bagian[0])
         except ValueError:
             return False
-        nama = bagian[1].strip()
+        nama = bagian[1].strip().rstrip(".").strip()
         db = self.items_db
         if db is None or jumlah <= 0 or not nama:
             return False

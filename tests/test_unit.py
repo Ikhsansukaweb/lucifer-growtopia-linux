@@ -1223,6 +1223,36 @@ def test_autocollect_uid_dipakai_ulang() -> None:
         str([(p.type, p.value) for p in kirim]))
 
 
+def test_collected_dengan_kode_warna() -> None:
+    bagian("7p. `Collected` dengan kode warna tetap terbaca")
+    from pathlib import Path
+
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.items import ItemDatabase
+    from lucifer.protocol import remove_color
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    items = Path(__file__).resolve().parent.parent / "data" / "items.dat"
+    if items.exists():
+        bot.items_db = ItemDatabase.from_file(items)
+    bot.inventory.items.clear()
+
+    # Teks nyata dari server (backtick mengganda setelah nama):
+    #   Collected `w24 Dirt``. Rarity: `w1``
+    cek("24 Dirt terbaca",
+        bot._baca_collected(remove_color("Collected `w24 Dirt``. Rarity: `w1``"))
+        and bot.inventory.getItemCount(2) == 24,
+        str(bot.inventory.getItemCount(2)))
+    cek("1 Dirt Seed terbaca",
+        bot._baca_collected(remove_color("Collected `w1 Dirt Seed``. Rarity: `w1``"))
+        and bot.inventory.getItemCount(3) == 1,
+        str(bot.inventory.getItemCount(3)))
+    cek("teks bukan Collected diabaikan",
+        bot._baca_collected(remove_color("You have 5 Dirt")) is False)
+
+
 def test_uid_item_dari_sendmapdata() -> None:
     bagian("7n. SendMapData mengisi peta uid->item (objek lama)")
     from pathlib import Path
@@ -1559,7 +1589,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,
-               test_autocollect_uid_dipakai_ulang,
+               test_autocollect_uid_dipakai_ulang, test_collected_dengan_kode_warna,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):
