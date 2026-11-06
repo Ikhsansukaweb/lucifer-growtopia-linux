@@ -582,7 +582,7 @@ class LuaEngine:
 
         tambahan = (
             "autofarm_stop", "autofarm_status", "autofarm_set_tiles",
-            "autofarm_set_seed", "autofarm_step",
+            "autofarm_set_block", "autofarm_set_seed", "autofarm_step",
             "autocollect_stop", "autocollect_status", "autocollect_set_radius",
             "spammer_stop", "spammer_status", "spammer_add", "spammer_clear",
             "spammer_set_delay",

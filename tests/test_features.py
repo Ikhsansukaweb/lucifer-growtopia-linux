@@ -10,8 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lucifer.bot import Account, Bot  # noqa: E402
-from lucifer.features import SEMUA_ALIAS, TILE_MENU, BG_TANAH, FeatureError  # noqa: E402
+from lucifer.bot import Account, Bot, Player  # noqa: E402
+from lucifer.features import (  # noqa: E402
+    SEMUA_ALIAS, SKEMA_FITUR, TILE_MENU, BG_TANAH, FeatureError,
+)
 from lucifer.world import Tile, World  # noqa: E402
 
 LULUS = 0
@@ -51,17 +53,109 @@ print("== alias menu deltaX ==")
 cek("alias terisi", len(SEMUA_ALIAS) > 20, f"{len(SEMUA_ALIAS)} alias")
 cek("semua alias punya keterangan", all(TILE_MENU[k] for k in SEMUA_ALIAS))
 
-print("== AutoFarm pemilihan tile ==")
+print("== AutoFarm = break & place (blok, bukan tanaman) ==")
 b = bot_kosong()
 b.world = dunia_contoh()
 af = b.fitur.autofarm
-cek("siap_panen hanya yang ready", [ (t.x, t.y) for t in af.siap_panen() ] == [(1, 1)])
+# Autofarm bekerja pada BLOK. Dua tile di dunia_contoh berisi tanaman
+# (extra_type=4), jadi keduanya BUKAN sasaran autofarm.
+cek("tanaman bukan sasaran pecah", af.siap_pecah() == [])
 cek("kosong = bg != 0 dan fg == 0", len(af.kosong()) == 23, f"{len(af.kosong())} tile")
+blok = b.world.tile(3, 3)
+blok.fg, blok.extra_type = 100, 0
+cek("blok jadi sasaran pecah", [(t.x, t.y) for t in af.siap_pecah()] == [(3, 3)])
 af.set_tiles([(0, 0), (4, 4)])
 cek("set_tiles manual dibatasi", len(af.tiles_sasaran()) == 2)
 af.set_tiles([{"x": 1, "y": 1}])
 cek("set_tiles terima dict", af.target_tiles == [(1, 1)])
-cek("sasaran manual -> siap_panen 1", len(af.siap_panen()) == 1)
+af.set_tiles([{"x": 3, "y": 3}])
+cek("sasaran manual -> siap_pecah 1", len(af.siap_pecah()) == 1)
+
+print("== urutan siklus ==")
+_jejak_af, _jejak_auto = [], []
+b4 = bot_kosong()
+b4.world = dunia_contoh()
+b4.status = "online"
+for nama in ("pecah", "ambil", "taruh"):
+    setattr(b4.fitur.autofarm, nama,
+            (lambda n: lambda: (_jejak_af.append(n), 0)[1])(nama))
+b4.fitur.autofarm.buang = lambda: 0
+b4.fitur.autofarm.satu_siklus()
+cek("autofarm: pecah -> ambil -> taruh",
+    _jejak_af == ["pecah", "ambil", "taruh"], str(_jejak_af))
+
+for nama in ("panen", "ambil", "tanam"):
+    setattr(b4.fitur.automation, nama,
+            (lambda n: lambda: (_jejak_auto.append(n), 0)[1])(nama))
+b4.fitur.automation.satu_siklus()
+cek("automation: panen -> ambil -> tanam",
+    _jejak_auto == ["panen", "ambil", "tanam"], str(_jejak_auto))
+
+print("== AutoFarm jangkauan (server tolak tileChange > 4 tile) ==")
+b5 = bot_kosong()
+b5.world = dunia_contoh()
+b5.local = Player(netid=1, name="uji", posx=0.0, posy=0.0)
+af5 = b5.fitur.autofarm
+cek("tile sendiri dalam jangkau", af5._dalam_jangkau(b5.world.tile(0, 0)))
+cek("tile 2,2 dalam jangkau", af5._dalam_jangkau(b5.world.tile(2, 2)))
+cek("tile 4,4 di luar jangkau", not af5._dalam_jangkau(b5.world.tile(4, 4)))
+cek("_urut_dekat urut jarak",
+    [(t.x, t.y) for t in af5._urut_dekat([b5.world.tile(4, 4), b5.world.tile(1, 1)])]
+    == [(1, 1), (4, 4)])
+
+print("== AutoFarm siklus nyata: pecah -> tile kosong -> taruh ==")
+b6 = bot_kosong()
+b6.world = dunia_contoh()
+b6.local = Player(netid=1, name="uji", posx=0.0, posy=0.0)
+b6.status = "online"
+blok6 = b6.world.tile(1, 2)
+blok6.fg, blok6.extra_type = 2, 0            # Dirt
+af6 = b6.fitur.autofarm
+af6.block_id, af6.block_mode = 2, "manual"
+
+b6.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+af6.collect = False
+af6.pecah_dipanggil, af6.taruh_dipanggil = [], []
+_tank6 = []
+b6.send_raw = lambda pkt, ext=b"": (_tank6.append(pkt), True)[1]
+
+import struct as _struct  # noqa: E402
+from lucifer.protocol import Tank as _Tank6  # noqa: E402
+
+kosong6 = []
+
+
+def _hit6(x, y):
+    af6.pecah_dipanggil.append((x, y))
+    # server membalas SendTileUpdateData: tile jadi kosong
+    b6._apply_tile_update(_Tank6(type=5, int_x=x, int_y=y),
+                          _struct.pack("<HHHH", 0, 6, 0, 0))
+    kosong6.append(b6.world.tile(x, y).fg)
+    return True
+
+def _place6(x, y, item):
+    af6.taruh_dipanggil.append((x, y, item))
+    b6._apply_tile_update(_Tank6(type=5, int_x=x, int_y=y),
+                          _struct.pack("<HHHH", item, 6, 0, 0))
+    return True
+
+b6.hit, b6.place = _hit6, _place6
+hasil6 = af6.satu_siklus()
+cek("pecah mengenai blok", af6.pecah_dipanggil == [(1, 2)], str(af6.pecah_dipanggil))
+cek("blok hilang setelah tile update", kosong6 == [0], str(kosong6))
+cek("taruh di tile yang sama", af6.taruh_dipanggil == [(1, 2, 2)], str(af6.taruh_dipanggil))
+cek("blok terpasang lagi", b6.world.tile(1, 2).fg == 2)
+cek("siklus melaporkan hasil", hasil6["dipecah"] == 1 and hasil6["ditaruh"] == 1,
+    str(hasil6))
+
+print("== AutoFarm beda dengan Automation ==")
+cek("autofarm punya pecah+taruh",
+    hasattr(af, "pecah") and hasattr(af, "taruh"))
+cek("autofarm tidak menanam bibit", not hasattr(af, "tanam"))
+auto = b.fitur.automation
+cek("automation punya panen+tanam",
+    hasattr(auto, "panen") and hasattr(auto, "tanam"))
+cek("automation tidak memecah blok", not hasattr(auto, "pecah"))
 
 print("== AutoFarm tolak start tanpa syarat ==")
 b2 = bot_kosong()
@@ -242,7 +336,48 @@ def uji_tabel_action() -> None:
         cek("aksi tak dikenal ditolak", "KeyError", "KeyError")
 
 
+def uji_autocollect_tile() -> None:
+    """Tile terpilih harus menang atas radius.
+
+    Bug nyata: `mode` default "Radius", dan syarat lama `mode == "Tile" and
+    bool(self.tiles)` membuat tile yang sudah dicentang user diabaikan —
+    bot menyapu radius 3 tile dan mengambil objek di atas/bawah bot.
+    """
+    print("\n-- Autocollect: tile menang atas radius --")
+    from lucifer.bot import Account, Bot, Player
+    from lucifer.features import AutoCollect
+
+    b = Bot(Account(), items_db=None)
+    b.local = Player(netid=1, posx=64, posy=96)
+    b.local.isLocalPlayer = True
+    ac = AutoCollect(b)
+    ac.faster = False
+    ac.check = False
+
+    Obj = lambda uid, x, y: type("O", (), {"uid": uid, "x": x, "y": y,
+                                           "item_id": 0})()
+    ambil: list[int] = []
+    b.collectObject = lambda uid: ambil.append(uid) or True
+    # bot di tile (2,3); (2,2) = satu tile di atas bot
+    b.world.dropped = [Obj(1, 70, 90), Obj(2, 70, 130)]
+
+    ac.tiles = [(2, 2)]
+    assert ac.sekali() == 1 and ambil == [1], ambil
+    cek("hanya tile terpilih yang diambil", ambil, [1])
+
+    ambil.clear()
+    ac.tiles = []
+    assert ac.sekali() == 2, ambil
+    cek("tanpa tile jatuh ke radius", ambil, [1, 2])
+
+    cek("opsi mode schema = Radius/Tile",
+        [k.get("opsi") for k in SKEMA_FITUR
+         if k["fitur"] == "autocollect"
+         for k in k["kontrol"] if k["kunci"] == "mode"], [["Radius", "Tile"]])
+
+
 uji_tabel_action()
+uji_autocollect_tile()
 
 
 print("\n" + "=" * 62)

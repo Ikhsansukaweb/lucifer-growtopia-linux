@@ -166,11 +166,26 @@ class Runner:
             self._log(f"[{bot.label}] connect ke server Growtopia...")
             if bot.connect():
                 self._log(f"[{bot.label}] terhubung ({bot.server[0]}:{bot.server[1]})")
+                self._simpan_token(bot)
             else:
                 self._log(f"[{bot.label}] gagal connect (status={bot.status})")
                 self._selamatkan_token(bot)
         except Exception as e:  # noqa: BLE001
             self._log(f"[{bot.label}] error connect: {type(e).__name__}: {e}")
+
+    def _simpan_token(self, bot: Bot) -> None:
+        """Simpan ltoken hasil penyegaran supaya tidak hilang saat backend mati.
+
+        Token ini sudah terpakai untuk login, jadi login berikutnya WAJIB
+        memanggil `check_token` lagi (lihat `Bot._segarkan_token`).
+        """
+        baru = getattr(bot.account, "ltoken", "")
+        if not baru:
+            return
+        try:
+            upsert_account(self.accounts_path, bot.account)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"[{bot.label}] gagal simpan ltoken: {e}")
 
     def _selamatkan_token(self, bot: Bot) -> None:
         """Bedakan `token mati` dari `cooldown` setelah login ditolak.
@@ -562,15 +577,18 @@ class Runner:
         if cmd == "stop":
             threading.Thread(target=self.stop, daemon=True).start()
             return {"ok": True, "message": "berhenti"}
-        if cmd in ("say", "warp", "connect", "disconnect", "move", "enter", "respawn", "collect") and len(parts) > 1:
+        # respawn/collect tidak butuh argumen: boleh diketik telanjang dari
+        # konsol Executor ("collect") maupun lewat label dari GUI.
+        if cmd in ("say", "warp", "connect", "disconnect", "move", "enter",
+                   "respawn", "collect", "profil"):
             if not self.engine:
                 return {"ok": False, "error": "engine belum siap"}
             # GUI mengirim "say <teks>" tanpa nama bot; CLI memakai
             # "say <bot> <teks>". Kalau kata pertama bukan label bot yang
             # terdaftar, seluruh sisa baris dianggap argumen bot utama.
             bots = self.engine.bots or {}
-            kepala = parts[1].split(maxsplit=1)[0]
-            if kepala in bots:
+            kepala = parts[1].split(maxsplit=1)[0] if len(parts) > 1 else ""
+            if kepala and kepala in bots:
                 bot = bots[kepala]
                 arg = parts[2] if len(parts) > 2 else ""
             else:
@@ -582,7 +600,7 @@ class Runner:
                 return {
                     "ok": False,
                     "error": (
-                        f"bot '{parts[1]}' tidak ada. Belum ada akun terdaftar — "
+                        f"bot '{kepala}' tidak ada. Belum ada akun terdaftar — "
                         "isi data/accounts.json atau jalankan "
                         "`lucifer login --ltoken \"<TOKEN>\"` dulu."
                     ),
@@ -621,6 +639,9 @@ class Runner:
             if cmd == "collect":
                 rng = int(arg) if arg.isdigit() else 3
                 return {"ok": True, "collected": bot.collect(range_=rng)}
+            if cmd == "profil":
+                # Minta dialog profil diri sendiri: satu-satunya sumber level.
+                return {"ok": bot.minta_profil()}
         return {"ok": False, "error": f"perintah tidak dikenal: {cmd}"}
 
     # ------------------------------------------------------------------ #

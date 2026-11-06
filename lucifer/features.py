@@ -44,6 +44,10 @@ __all__ = [
     "FeatureError",
     "AutoFarm",
     "AutoCollect",
+    "Automation",
+    "AutoWrench",
+    "ModExit",
+    "Parameter",
     "Spammer",
     "PathFinder",
     "AutoDrop",
@@ -144,13 +148,52 @@ def _tunggu(stop: threading.Event, detik: float) -> bool:
 # --------------------------------------------------------------------------- #
 # AutoFarm
 # --------------------------------------------------------------------------- #
+# Jangkauan `tileChange`: klien asli menolak tile > 4 dari pemain.
+JANGKAU_TILE = 4
+
+
+def dalam_jangkau(bot: Bot, t: Tile, jangkau: int = JANGKAU_TILE) -> bool:
+    if bot.local is None:
+        return True
+    cx, cy = bot.local.posx + 10, bot.local.posy + 15
+    tx, ty = t.x * 32 + 16, t.y * 32 + 16
+    return (tx - cx) ** 2 + (ty - cy) ** 2 <= (32 * jangkau) ** 2
+
+
+def urut_dekat(bot: Bot, tiles: list[Tile]) -> list[Tile]:
+    if bot.local is None:
+        return tiles
+    return sorted(tiles, key=lambda t: (t.x * 32 - bot.local.posx) ** 2
+                                        + (t.y * 32 - bot.local.posy) ** 2)
+
+
+def dekati(bot: Bot, t: Tile, jangkau: int = JANGKAU_TILE) -> bool:
+    """Masuk jangkauan tile sasaran: cari jalan, kalau gagal geser langsung."""
+    if dalam_jangkau(bot, t, jangkau):
+        return True
+    for nx, ny in ((t.x, t.y + 1), (t.x, t.y - 1), (t.x + 1, t.y), (t.x - 1, t.y)):
+        tetangga = bot.world.tile(nx, ny)
+        if tetangga is None or tetangga.fg != 0:
+            continue
+        if bot.findPath(nx, ny) and dalam_jangkau(bot, t, jangkau):
+            return True
+    if bot.local is None:
+        return False
+    batas = jangkau - 1
+    dx = max(-batas, min(batas, t.x - bot.local.tile_x))
+    dy = max(-batas, min(batas, t.y - bot.local.tile_y))
+    if dx or dy:
+        bot.moveTo(dx, dy)
+    return dalam_jangkau(bot, t, jangkau)
+
+
 class AutoFarm:
     """Auto tanam + panen, setara `autofarm_*` deltaX.
 
     Semua parameter di bawah mengikuti `assets/menu.json` deltaX (sub-kategori
     Automation/Autofarm), jadi tiap tombol di sana punya padanan di sini:
 
-      autofarm_item_picker       seed_id
+      autofarm_item_picker       block_id (break & place blok yang sama)
       autofarm_target_tile       set_tiles()
       autofarm_verify            verify
       autofarm_do_break          do_break
@@ -179,8 +222,14 @@ class AutoFarm:
         self.aktif = False
 
         # -- sasaran ----------------------------------------------------- #
-        self.seed_id = 0
+        # Autofarm = BREAK & PLACE blok. Satu kolom item saja (deltaX:
+        # "Block to break"): blok yang dipecah, dan blok yang sama ditaruh
+        # kembali. Tanam/panen tanaman ada di Automation.
+        self.block_id = 0
+        self.block_mode = "auto"
         self.target_tiles: list[tuple[int, int]] = []
+        self.debug = False
+        self.verify_debug = False
 
         # -- apa yang dikerjakan ------------------------------------------ #
         self.do_break = True
@@ -220,9 +269,14 @@ class AutoFarm:
 
         # -- hasil --------------------------------------------------------- #
         self.siklus: list[int] = []
-        self.dipanen_total = 0
-        self.ditanam_total = 0
+        self.dipeeah_total = 0
+        self.ditaruh_total = 0
         self.diambil_total = 0
+        # Blok yang terakhir pecah; dipakai mode block_mode="auto" saat
+        # menaruh lagi tanpa perlu isi id manual.
+        self._blok_terakhir = 0
+        # Tile yang baru dipecah siklus ini: satu-satunya tempat menaruh blok.
+        self._baru_kosong: set[tuple[int, int]] = set()
         self._s = _Siklus("autofarm")
 
     # -- sasaran --------------------------------------------------------- #
@@ -231,14 +285,17 @@ class AutoFarm:
 
         Dipakai dashboard & Lua supaya tidak perlu satu method per tombol:
 
-            af.atur(seed_id=3, punch_count=3, punch_delay=120, faster=True,
+            af.atur(block_id=2, punch_count=3, punch_delay=120, faster=True,
                     do_place=False, collect=False, drop_aktif=True)
 
         Kunci tak dikenal diabaikan (bukan error) supaya skrip lama tetap jalan.
         """
         peta = {
-            "seed_id": "seed_id",
-            "item_picker": "seed_id",
+            "block_id": "block_id",
+            "item_picker": "block_id",
+            "block_mode": "block_mode",
+            "debug": "debug",
+            "verify_debug": "verify_debug",
             "target_tile": "target_tiles",
             "verify": "verify",
             "verify_pos": "verify_pos",
@@ -296,7 +353,8 @@ class AutoFarm:
                           "show_punch", "collect", "collect_block", "collect_seed",
                           "drop_aktif", "pick_aktif"):
                 setattr(self, nama, bool(nilai))
-            elif nama in ("drop_mode", "drop_world", "pick_world", "pick_mode"):
+            elif nama in ("drop_mode", "drop_world", "pick_world", "pick_mode",
+                          "block_mode"):
                 setattr(self, nama, str(nilai))
             else:
                 setattr(self, nama, int(nilai))
@@ -330,24 +388,67 @@ class AutoFarm:
             return out
         return [t for t in w.tiles if t.bg != 0]
 
-    def siap_panen(self) -> list[Tile]:
-        """Tile sasaran yang tanamannya sudah bisa dipetik.
+    def siap_pecah(self) -> list[Tile]:
+        """Tile sasaran yang berisi BLOK siap dipecah (autofarm = break).
 
-        `verify` mematikan memeriksa `ready`; tanpa itu semua tile bertanaman
-        dipukul (lebih cepat, tapi memboroskan pukulan).
+        Autofarm bekerja pada blok, bukan tanaman: tile dianggap sasaran bila
+        `fg` terisi dan bukan tanaman (`is_seed`). Tanaman siap panen milik
+        Automation. `block_mode="manual"` membatasi ke satu id blok.
         """
         out = []
         for t in self.tiles_sasaran():
-            if not t.is_seed:
+            if t.fg == 0 or t.is_seed:
                 continue
-            if self.verify and not t.ready:
+            # Mode "auto" tanpa id = semua blok. Jangan pukul pintu, sign,
+            # lock, atau blok milik orang lain: server tetap menolak, tapi
+            # paketnya spam dan bisa dianggap griefing.
+            if t.extra_type in self.EXTRA_BUKAN_BLOK:
+                continue
+            if not self.bot.hasAccess(t.x, t.y):
+                continue
+            if self.block_mode == "manual" and self.block_id and t.fg != self.block_id:
                 continue
             out.append(t)
         return out
 
     def kosong(self) -> list[Tile]:
-        """Tile sasaran yang bisa ditanami."""
-        return [t for t in self.tiles_sasaran() if t.fg == 0 and t.bg != 0]
+        """Tile sasaran bekas pecahan yang bisa ditanami/ditaruh blok lagi."""
+        return [t for t in self.tiles_sasaran()
+                if t.fg == 0 and t.bg != 0 and self.bot.hasAccess(t.x, t.y)]
+
+    def kosong_siklus(self) -> list[Tile]:
+        """Tile yang boleh ditaruh blok: bekas pecah siklus ini, atau manual.
+
+        `kosong()` mengembalikan SEMUA tile kosong di dunia; kalau dipakai
+        untuk menaruh, autofarm menanam blok di sembarang tempat dan
+        inventory habis. Jadi taruh dibatasi ke tile yang baru dipecah.
+        """
+        w = self.bot.world
+        posisi = self._baru_kosong or set(self.target_tiles)
+        out = []
+        for x, y in posisi:
+            t = w.tile(x, y)
+            if t is not None and t.fg == 0 and t.bg != 0 and self.bot.hasAccess(x, y):
+                out.append(t)
+        return out
+
+    # Jangkauan pukul: server menolak `tileChange` di luar 4 tile dari pemain
+    # (klien asli: `isInside(player.pos+10/+15, 32*4, tile*32+16)`). Autofarm
+    # wajib mendekat dulu, bukan memukul seluruh dunia.
+    JANGKAU = JANGKAU_TILE
+
+    # extra_type yang bukan blok biasa: sign(1), door(2), lock(3), mailbox(6),
+    # bulletin(7), donation box(12). Jangan dipecah autofarm.
+    EXTRA_BUKAN_BLOK = (1, 2, 3, 6, 7, 12)
+
+    def _dalam_jangkau(self, t: Tile) -> bool:
+        return dalam_jangkau(self.bot, t, self.JANGKAU)
+
+    def _urut_dekat(self, tiles: list[Tile]) -> list[Tile]:
+        return urut_dekat(self.bot, tiles)
+
+    def _dekati(self, t: Tile) -> bool:
+        return dekati(self.bot, t, self.JANGKAU)
 
     # -- jeda ------------------------------------------------------------- #
     def _jeda(self, ms: float) -> float:
@@ -355,13 +456,20 @@ class AutoFarm:
         return (float(ms) * 0.6 if self.faster else float(ms)) / 1000.0
 
     # -- aksi -------------------------------------------------------------- #
-    def panen(self) -> int:
+    def pecah(self) -> int:
+        """Pukul blok sampai pecah (autofarm_do_break)."""
         if not self.do_break:
             return 0
         n = 0
-        for t in self.siap_panen():
+        self._baru_kosong = set()
+        for t in self._urut_dekat(self.siap_pecah()):
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
+            if not self._dekati(t):
+                continue
+            # Ingat blok apa yang pecah: mode "auto" memakainya lagi saat
+            # menaruh, jadi tidak perlu isi id blok manual.
+            self._blok_terakhir = t.fg
             for _ in range(max(1, int(self.punch_count))):
                 self.bot.hit(t.x, t.y)
                 # `showpunch` = kirim semua pukulan tanpa jeda; default beri jeda
@@ -369,8 +477,10 @@ class AutoFarm:
                 if not self.show_punch:
                     if _tunggu(self._s._stop, self._jeda(self.punch_delay)):
                         return n
+            # Catat tile bekas pecah: hanya di sini blok ditaruh lagi.
+            self._baru_kosong.add((t.x, t.y))
             n += 1
-            self.dipanen_total += 1
+            self.dipeeah_total += 1
         return n
 
     def ambil(self) -> int:
@@ -404,19 +514,24 @@ class AutoFarm:
                 break
         return total
 
-    def tanam(self) -> int:
-        if not self.do_place or not self.seed_id:
+    def taruh(self) -> int:
+        """Taruh blok lagi di tile bekas pecahan (autofarm_do_place)."""
+        blok = self.block_id or self._blok_terakhir
+        if not self.do_place or not blok:
             return 0
-        punya = self.bot.inventory.getItemCount(self.seed_id)
+        punya = self.bot.inventory.getItemCount(blok)
         n = 0
-        for t in self.kosong():
+        for t in self._urut_dekat(self.kosong_siklus()):
             if n >= punya:
                 break
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
-            self.bot.place(t.x, t.y, self.seed_id)
+            if not self._dekati(t):
+                continue
+            self.bot.place(t.x, t.y, blok)
+            self._baru_kosong.discard((t.x, t.y))
             n += 1
-            self.ditanam_total += 1
+            self.ditaruh_total += 1
             if _tunggu(self._s._stop, self._jeda(self.place_delay)):
                 break
         return n
@@ -427,7 +542,7 @@ class AutoFarm:
             return 0
         inv = self.bot.inventory
         n = 0
-        target = self.seed_id if self.seed_id else 0
+        target = self.block_id if self.block_id else 0
         for item_id, it in list(inv.items.items()):
             if target and item_id not in (target, target - 1):
                 continue
@@ -447,14 +562,21 @@ class AutoFarm:
 
     # -- siklus ------------------------------------------------------------ #
     def satu_siklus(self) -> dict[str, int]:
-        """Satu putaran penuh: buang -> ambil -> panen -> tanam."""
+        """Satu putaran penuh: buang -> ambil -> pecah blok -> taruh blok.
+
+        Ini break & place: blok dipecah lalu ditaruh lagi di tile yang sama.
+        Tanam/panen tanaman ada di :class:`Automation`.
+        """
+        # Urutan penting: blok yang baru pecah langsung diambil (dijatuhkan
+        # tepat di tile itu), baru ditaruh lagi. Kalau diambil lebih dulu,
+        # hasil pecahan baru terambil satu siklus kemudian.
         hasil = {
             "dibuang": self.buang(),
+            "dipecah": self.pecah(),
             "diambil": self.ambil(),
-            "dipanen": self.panen(),
-            "ditanam": self.tanam(),
+            "ditaruh": self.taruh(),
         }
-        self.siklus.append(hasil["dipanen"] + hasil["ditanam"])
+        self.siklus.append(hasil["dipecah"] + hasil["ditaruh"])
         return hasil
 
     # -- loop -------------------------------------------------------------- #
@@ -465,8 +587,8 @@ class AutoFarm:
             raise FeatureError("bot belum online — connect dulu")
         if not self.bot.world.tiles:
             raise FeatureError("dunia belum termuat — masuk world dulu")
-        if self.do_place and not self.seed_id:
-            raise FeatureError("seed_id belum diset (autofarm_item_picker)")
+        if self.do_place and self.block_mode == "manual" and not self.block_id:
+            raise FeatureError("block_id belum diset (autofarm_item_picker)")
 
         bila_none = self.siklus_delay / 1000.0
         self._s = _Siklus("autofarm", aktif=True)
@@ -498,13 +620,14 @@ class AutoFarm:
     def info(self) -> dict[str, Any]:
         return {
             "aktif": self._s.aktif,
-            "seed_id": self.seed_id,
+            "block_id": self.block_id,
+            "block_mode": self.block_mode,
             "tiles": len(self.target_tiles),
-            "siap_panen": len(self.siap_panen()) if self.bot.world.tiles else 0,
+            "siap_pecah": len(self.siap_pecah()) if self.bot.world.tiles else 0,
             "kosong": len(self.kosong()) if self.bot.world.tiles else 0,
             "siklus": len(self.siklus),
-            "dipanen_total": self.dipanen_total,
-            "ditanam_total": self.ditanam_total,
+            "dipecah_total": self.dipeeah_total,
+            "ditaruh_total": self.ditaruh_total,
             "diambil_total": self.diambil_total,
             "dibuang_total": self.drop_total,
             "do_break": self.do_break,
@@ -543,13 +666,20 @@ class AutoCollect:
         self.mode = "Radius"      # "Radius" | "Tile"
         self.faster = True        # tanpa jeda antar objek
         self.check = True         # cek objek masih ada sebelum diambil
+        self.item_disable: list[int] = []   # collectfilter_itemdisabletake
+        self.nilai = 0            # filter_collect_valuetake
+        self.inventory_check = False
+        self.debug_area = False
+        self.debug = False
         self.aktif = False
         self.total = 0
         self._s = _Siklus("autocollect")
 
     def sekali(self) -> int:
-        # mode Tile = hanya objek yang jatuh di tile terpilih
-        pakai_tile = self.mode == "Tile" and bool(self.tiles)
+        # Tile terpilih MENANG atas radius. `mode` default "Radius", jadi
+        # kalau syaratnya `mode == "Tile"` pilihan tile user diabaikan dan
+        # bot menyapu radius 3 tile — persis bug yang dilaporkan.
+        pakai_tile = bool(self.tiles)
         if self.faster:
             interval = 0
         else:
@@ -562,6 +692,8 @@ class AutoCollect:
         n = 0
         for d in list(self.bot.world.dropped):
             if self.item_id and d.item_id != self.item_id:
+                continue
+            if d.item_id in self.item_disable:
                 continue
             if pakai_tile:
                 tx, ty = int(d.x // 32), int(d.y // 32)
@@ -613,6 +745,9 @@ class AutoCollect:
     def info(self) -> dict[str, Any]:
         return {"aktif": self._s.aktif, "radius": self.radius,
                 "jeda": self.jeda, "item_id": self.item_id,
+                "item_disable": list(self.item_disable), "nilai": self.nilai,
+                "inventory_check": self.inventory_check,
+                "debug_area": self.debug_area, "debug": self.debug,
                 "mode": self.mode, "faster": self.faster, "check": self.check,
                 "tiles": [list(t) for t in self.tiles],
                 "diambil": self.total,
@@ -630,6 +765,12 @@ class Spammer:
         self.daftar: list[str] = []
         self.delay = 1200        # ms
         self.shuffle = False
+        self.autodelay = False        # spammer_config_autodelay
+        self.delay_long = 4000        # spammer_config_delay_long
+        self.autocolor = False        # spammer_config_autocolor
+        self.sendclient = False       # spammer_config_sendclient
+        self.autoenter = False        # cheat_config_autoenter
+        self.replay_after_enter = False   # spammer_replay_active
         self.aktif = False
         self.terkirim = 0
         self._s = _Siklus("spammer")
@@ -645,6 +786,13 @@ class Spammer:
         self.daftar.clear()
         self._idx = 0
 
+    def _warnai(self, teks: str) -> str:
+        """`autocolor` = sisipkan kode warna acak di depan pesan."""
+        if not self.autocolor:
+            return teks
+        warna = random.choice("0123456789abcdef")
+        return f"`{warna}{teks}`0"
+
     def _berikut(self) -> str:
         if not self.daftar:
             return ""
@@ -658,7 +806,7 @@ class Spammer:
         teks = self._berikut()
         if not teks:
             return False
-        ok = self.bot.say(teks)
+        ok = self.bot.say(self._warnai(teks))
         if ok:
             self.terkirim += 1
         return ok
@@ -698,7 +846,9 @@ class Spammer:
 
     def info(self) -> dict[str, Any]:
         return {"aktif": self._s.aktif, "jumlah_teks": len(self.daftar),
-                "delay": self.delay, "terkirim": self.terkirim}
+                "delay": self.delay, "terkirim": self.terkirim,
+                "autodelay": self.autodelay, "delay_long": self.delay_long,
+                "autocolor": self.autocolor, "shuffle": self.shuffle}
 
 
 # --------------------------------------------------------------------------- #
@@ -716,6 +866,9 @@ class PathFinder:
         self.bot = bot
         self.block_jump = True
         self.teleport_path = False
+        self.debug_paths = False
+        self.current_loc = False
+        self.overclock = False
         self.jeda = 0.12
         self.x = 0               # tujuan terakhir (dipakai GUI)
         self.y = 0
@@ -914,6 +1067,8 @@ class Replay:
         self.loop = False
         self.custom_delay = 0          # ms; 0 = pakai tempo rekaman
         self.file = "rekaman.json"     # berkas terakhir yang dipakai
+        self.raw = False               # replay_record_active_raw
+        self.text_packet = False       # replay_record_active_text
         self.aksi: list[dict[str, Any]] = []
         self._t0 = 0.0
         self._asli: dict[str, Callable[..., Any]] = {}
@@ -1275,6 +1430,384 @@ class Commands:
 
 
 # --------------------------------------------------------------------------- #
+# Automation — tanam & panen berkelanjutan (`automation_*` deltaX)
+# --------------------------------------------------------------------------- #
+class Automation:
+    """Tanam/panen otomatis terpisah dari AutoFarm.
+
+    Bedanya dengan :class:`AutoFarm`: Autofarm = pecah **dan** tanam di tile
+    pilihan (break + place). Automation = siklus tanam/panen di lahan sendiri,
+    tile ditentukan otomatis dari isi dunia, dengan jeda tanam dan jeda panen
+    terpisah seperti deltaX.
+
+    Paket yang dipakai sama dengan AutoFarm (`hit`, `place`) — keduanya sudah
+    terbukti diterima server, jadi kelas ini tidak menambah tebakan protokol.
+    """
+
+    def __init__(self, bot: Bot) -> None:
+        self.bot = bot
+        self.aktif = False
+        self.item = 0                 # automation_item (bibit)
+        self.mode = "Plant & Harvest"  # automation_mode
+        self.safe_delay = True
+        self.delay_plant = 250        # ms
+        self.delay_harvest = 250      # ms
+        self.antimiss = True
+        self.start_from_bottom = False
+        self.autocollect = True
+        self.autodrop = False
+        self.autodrop_minimum = 180
+        self.autodrop_x = 0
+        self.autodrop_y = 0
+        self.autodrop_facing = "auto"
+        self.autotake = False
+        self.autotake_minimum = 1
+        self.autosplice = False
+        self.splice_item = 0
+        self.autosplice_minimum_planted = 1
+        self.debug = False
+        self.smart_delay = True
+        self.dipanen_total = 0
+        self.ditanam_total = 0
+        # Tile yang baru dipanen: satu-satunya tempat menanam bibit lagi.
+        self._baru_kosong: set[tuple[int, int]] = set()
+        self._s = _Siklus("automation")
+
+    # -- lahan ------------------------------------------------------------ #
+    def _tiles(self) -> list[Tile]:
+        w = self.bot.world
+        if not w.tiles:
+            return []
+        out = [t for t in w.tiles if t.bg != 0]
+        # automation_start_from_bottom: kerjakan baris bawah dulu.
+        if self.start_from_bottom:
+            out.sort(key=lambda t: (-t.y, t.x))
+        return out
+
+    def siap_panen(self) -> list[Tile]:
+        return [t for t in self._tiles() if t.is_seed and (t.ready or not self.antimiss)]
+
+    def kosong(self) -> list[Tile]:
+        return [t for t in self._tiles() if t.fg == 0 and t.bg != 0]
+
+    def kosong_siklus(self) -> list[Tile]:
+        """Hanya tile bekas panen siklus ini; kalau kosong, tidak menanam."""
+        w = self.bot.world
+        out = []
+        for x, y in self._baru_kosong:
+            t = w.tile(x, y)
+            if t is not None and t.fg == 0 and t.bg != 0:
+                out.append(t)
+        return out
+
+    # -- aksi -------------------------------------------------------------- #
+    def panen(self) -> int:
+        if self.mode == "Plant":
+            return 0
+        n = 0
+        self._baru_kosong = set()
+        for t in urut_dekat(self.bot, self.siap_panen()):
+            if self._s._stop.is_set() or self.bot.status != BotStatus.online:
+                break
+            if not dekati(self.bot, t):
+                continue
+            self.bot.hit(t.x, t.y)
+            self._baru_kosong.add((t.x, t.y))
+            n += 1
+            self.dipanen_total += 1
+            if _tunggu(self._s._stop, self.delay_harvest / 1000.0):
+                break
+        return n
+
+    def tanam(self) -> int:
+        if self.mode == "Harvest":
+            return 0
+        if not self.item:
+            raise FeatureError("automation_item belum diset")
+        punya = self.bot.inventory.getItemCount(self.item)
+        n = 0
+        for t in urut_dekat(self.bot, self.kosong_siklus()):
+            if n >= punya:
+                break
+            if self._s._stop.is_set() or self.bot.status != BotStatus.online:
+                break
+            if not dekati(self.bot, t):
+                continue
+            self.bot.place(t.x, t.y, self.item)
+            self._baru_kosong.discard((t.x, t.y))
+            n += 1
+            self.ditanam_total += 1
+            if _tunggu(self._s._stop, self.delay_plant / 1000.0):
+                break
+        return n
+
+    def ambil(self) -> int:
+        if not self.autocollect:
+            return 0
+        return self.bot.collect(range_=3, interval=0 if self.smart_delay else 120)
+
+    # -- loop -------------------------------------------------------------- #
+    def satu_siklus(self) -> dict[str, int]:
+        """Satu putaran: panen -> ambil hasil -> tanam bibit."""
+        panen = self.panen()
+        ambil = self.ambil()
+        tanam = self.tanam()
+        return {"diambil": ambil, "dipanen": panen, "ditanam": tanam}
+
+    def start(self, jeda: float | None = None) -> bool:
+        if self._s.aktif:
+            return True
+        if self.bot.status != BotStatus.online:
+            raise FeatureError("bot belum online — connect dulu")
+        if not self.bot.world.tiles:
+            raise FeatureError("dunia belum termuat — masuk world dulu")
+        if self.mode != "Harvest" and not self.item:
+            raise FeatureError("automation_item belum diset (item to farm)")
+        self._s = _Siklus("automation", aktif=True)
+        interval = 1.0 if jeda is None else float(jeda)
+
+        def loop() -> None:
+            while not self._s._stop.is_set():
+                try:
+                    self.satu_siklus()
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tunggu(self._s._stop, interval):
+                    break
+            self._s.aktif = False
+            self.aktif = False
+
+        self._s._thread = threading.Thread(target=loop, name="lucifer-automation", daemon=True)
+        self._s._thread.start()
+        self.aktif = True
+        return True
+
+    def stop(self) -> None:
+        self._s.stop()
+        self.aktif = False
+
+    @property
+    def berjalan(self) -> bool:
+        return self._s.aktif
+
+    def info(self) -> dict[str, Any]:
+        return {"aktif": self._s.aktif, "item": self.item, "mode": self.mode,
+                "dipanen": self.dipanen_total, "ditanam": self.ditanam_total}
+
+
+# --------------------------------------------------------------------------- #
+# Auto Wrench — buka wrench pemain/tile terdekat berkala (`cheat_autowrench`)
+# --------------------------------------------------------------------------- #
+class AutoWrench:
+    """Wrench otomatis. Paket: `TileActivateRequest` value=32 (wrench)."""
+
+    def __init__(self, bot: Bot) -> None:
+        self.bot = bot
+        self.aktif = False
+        self.enable = False
+        self.mode = "Player"        # cheat_autowrench_mode: Player | Tile
+        self.fastwrench = "Normal"  # cheat_fastwrench
+        self.fastwrench_enable = False
+        self.enhanced = False
+        self.enable = False
+        self.autowrench = False
+        self.target_x = 0
+        self.target_y = 0
+        self.jeda = 1.0
+        self.total = 0
+        self._s = _Siklus("autowrench")
+
+    def _target(self) -> Optional[tuple[int, int]]:
+        if self.mode == "Tile":
+            if self.target_x or self.target_y:
+                return (self.target_x, self.target_y)
+            if self.bot.local:
+                return (self.bot.local.tile_x, self.bot.local.tile_y)
+            return None
+        # Player: pemain lain terdekat.
+        me = self.bot.local
+        if me is None:
+            return None
+        kandidat = [p for p in self.bot.players.values() if p.netid != me.netid]
+        if not kandidat:
+            return None
+        dekat = min(kandidat, key=lambda p: (p.posx - me.posx) ** 2 + (p.posy - me.posy) ** 2)
+        return (dekat.tile_x, dekat.tile_y)
+
+    def sekali(self) -> bool:
+        t = self._target()
+        if t is None:
+            return False
+        ok = self.bot.wrench(t[0], t[1])
+        if ok:
+            self.total += 1
+        return ok
+
+    def start(self, jeda: float = 0) -> bool:
+        if self._s.aktif:
+            return True
+        if self.bot.status != BotStatus.online:
+            raise FeatureError("bot belum online — connect dulu")
+        self._s = _Siklus("autowrench", aktif=True)
+        interval = float(jeda) if jeda else float(self.jeda)
+
+        def loop() -> None:
+            while not self._s._stop.is_set():
+                try:
+                    self.sekali()
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tunggu(self._s._stop, interval):
+                    break
+            self._s.aktif = False
+            self.aktif = False
+
+        self._s._thread = threading.Thread(target=loop, name="lucifer-autowrench", daemon=True)
+        self._s._thread.start()
+        self.aktif = True
+        return True
+
+    def stop(self) -> None:
+        self._s.stop()
+        self.aktif = False
+
+    @property
+    def berjalan(self) -> bool:
+        return self._s.aktif
+
+    def info(self) -> dict[str, Any]:
+        return {"aktif": self._s.aktif, "mode": self.mode, "total": self.total}
+
+
+# --------------------------------------------------------------------------- #
+# Moderator Exit — keluar cepat saat moderator masuk (`mod_exit_*` deltaX)
+# --------------------------------------------------------------------------- #
+class ModExit:
+    """Drop item di posisi tetap lalu warp keluar saat moderator terdeteksi.
+
+    Pendeteksian memakai daftar `bot.players` (nama + flag moderator). Karena
+    server tidak selalu mengirim flag moderator, tombol Trigger di GUI juga
+    memanggil :meth:`jalankan` secara manual.
+    """
+
+    def __init__(self, bot: Bot) -> None:
+        self.bot = bot
+        self.enable = False
+        self.mode = "Drop & Exit"
+        self.drop_world = ""
+        self.drop_pos_x = 0
+        self.drop_pos_y = 0
+        self.donate_world = ""
+        self.donate_player_pos_x = 0
+        self.donate_player_pos_y = 0
+        self.donate_pos_x = 0
+        self.donate_pos_y = 0
+        self.jeda = 1.0
+        self.aktif = False
+        self.terakhir = ""
+        self._s = _Siklus("modexit")
+
+    def moderator(self) -> list[str]:
+        """Nama pemain yang ditandai moderator (kalau server mengirimnya)."""
+        return [p.name or f"#{p.netid}" for p in self.bot.players.values()
+                if (p.isModerator or p.isSuperModerator)
+                and not p.isLocalPlayer]
+
+    def jalankan(self, alasan: str = "manual") -> dict[str, Any]:
+        """Aksi keluar: buang semua item lalu warp ke dunia drop."""
+        b = self.bot
+        dibuang = 0
+        for item_id, it in list(b.inventory.items.items()):
+            try:
+                b.drop(item_id, it.count)
+                dibuang += 1
+            except Exception:  # noqa: BLE001
+                pass
+        keluar = False
+        if self.drop_world:
+            keluar = b.warp(self.drop_world)
+        self.terakhir = alasan
+        return {"ok": True, "alasan": alasan, "dibuang": dibuang,
+                "warp": keluar, "moderator": self.moderator()}
+
+    def start(self, jeda: float = 0) -> bool:
+        if self._s.aktif:
+            return True
+        if self.bot.status != BotStatus.online:
+            raise FeatureError("bot belum online — connect dulu")
+        self._s = _Siklus("modexit", aktif=True)
+        interval = float(jeda) if jeda else float(self.jeda)
+
+        def loop() -> None:
+            while not self._s._stop.is_set():
+                try:
+                    if self.moderator():
+                        self.jalankan("moderator terdeteksi")
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+                if _tunggu(self._s._stop, interval):
+                    break
+            self._s.aktif = False
+            self.aktif = False
+
+        self._s._thread = threading.Thread(target=loop, name="lucifer-modexit", daemon=True)
+        self._s._thread.start()
+        self.aktif = True
+        return True
+
+    def stop(self) -> None:
+        self._s.stop()
+        self.aktif = False
+
+    @property
+    def berjalan(self) -> bool:
+        return self._s.aktif
+
+    def info(self) -> dict[str, Any]:
+        return {"aktif": self._s.aktif, "moderator": self.moderator(),
+                "terakhir": self.terakhir}
+
+
+# --------------------------------------------------------------------------- #
+# Parameter saja — fitur yang paketnya belum terbukti
+# --------------------------------------------------------------------------- #
+class Parameter:
+    """Wadah nilai form untuk fitur yang paketnya belum terbukti di server.
+
+    Kenapa ada: mod menu harus punya bentuk yang sama dengan deltaX (semua
+    kolom tersedia dan tersimpan), tapi mengirim paket tebakan ke Growtopia
+    berisiko kick/ban. Jadi kelas ini hanya menyimpan parameter + status, dan
+    menandai `didukung = False` supaya GUI menampilkan catatan.
+    """
+
+    didukung = False
+
+    def __init__(self, bot: Bot, nama: str, **awal: Any) -> None:
+        self.bot = bot
+        self.nama = nama
+        self.aktif = False
+        self.catatan = "parameter tersimpan; paket ke server belum terbukti"
+        for k, v in awal.items():
+            setattr(self, k, v)
+
+    def start(self, *a: Any, **kw: Any) -> bool:
+        self.aktif = True
+        return True
+
+    def stop(self) -> None:
+        self.aktif = False
+
+    @property
+    def berjalan(self) -> bool:
+        return self.aktif
+
+    def info(self) -> dict[str, Any]:
+        return {"aktif": self.aktif, "didukung": self.didukung,
+                "catatan": self.catatan}
+
+
+# --------------------------------------------------------------------------- #
 # Kumpulan fitur per bot + API untuk Lua
 # --------------------------------------------------------------------------- #
 class FiturBot:
@@ -1284,15 +1817,36 @@ class FiturBot:
         self.bot = bot
         self.autofarm = AutoFarm(bot)
         self.autocollect = AutoCollect(bot)
+        self.automation = Automation(bot)
+        self.autowrench = AutoWrench(bot)
+        self.modexit = ModExit(bot)
         self.spammer = Spammer(bot)
         self.path = PathFinder(bot)
         self.autodrop = AutoDrop(bot)
         self.replay = Replay(bot)
         self.growscan = Growscan(bot)
         self.commands = Commands(bot)
+        # Fishing / AutoCrime / Ghost / Copy Song: paketnya belum terbukti
+        # diterima server, jadi hanya menyimpan parameter (lihat `Parameter`).
+        self.fishing = Parameter(bot, "Fishing")
+        self.autocrime = Parameter(bot, "AutoCrime")
+        self.ghost = Parameter(bot, "Ghost")
+        self.copysong = Parameter(bot, "Copy Song")
+        # Kolom deltaX yang belum punya perilaku sendiri tetap disimpan supaya
+        # form tidak kehilangan isian saat Simpan/Nyalakan.
+        for fitur in ("spammer", "autofarm", "automation", "autocollect",
+                      "fishing", "autocrime", "copysong", "ghost", "replay",
+                      "autowrench", "modexit"):
+            obj = getattr(self, fitur, None)
+            if obj is None:
+                continue
+            for k, v in parameter_default(fitur).items():
+                if not hasattr(obj, k):
+                    setattr(obj, k, v)
 
     def stop_semua(self) -> None:
-        for f in (self.autofarm, self.autocollect, self.spammer,
+        for f in (self.autofarm, self.autocollect, self.automation,
+                  self.autowrench, self.modexit, self.spammer,
                   self.autodrop, self.replay):
             try:
                 f.stop()
@@ -1303,6 +1857,12 @@ class FiturBot:
         return {
             "autofarm": self.autofarm.info(),
             "autocollect": self.autocollect.info(),
+            "automation": self.automation.info(),
+            "autowrench": self.autowrench.info(),
+            "modexit": self.modexit.info(),
+            "fishing": self.fishing.info(),
+            "autocrime": self.autocrime.info(),
+            "ghost": self.ghost.info(),
             "spammer": self.spammer.info(),
             "autodrop": self.autodrop.info(),
             "path": self.path.info(),
@@ -1324,7 +1884,9 @@ class FiturBot:
             "autofarm_status": af.info,
             "autofarm_atur": af.atur,
             "autofarm_set_tiles": af.set_tiles,
-            "autofarm_set_seed": lambda i: setattr(af, "seed_id", int(i)) or af.seed_id,
+            "autofarm_set_block": lambda i: setattr(af, "block_id", int(i)) or af.block_id,
+            # nama lama, dipertahankan supaya skrip yang sudah ada tetap jalan
+            "autofarm_set_seed": lambda i: setattr(af, "block_id", int(i)) or af.block_id,
             "autofarm_step": af.satu_siklus,
             "autofarm_buang": af.buang,
             # autocollect
@@ -1373,129 +1935,391 @@ class FiturBot:
         }
 
 
+
 # --------------------------------------------------------------------------- #
 # Skema panel: satu sumber untuk GUI (kiri = kategori, kanan = pengaturan)
 # --------------------------------------------------------------------------- #
 # Tiap kategori punya daftar kontrol. GUI menggambar kontrol sesuai `tipe`:
-#   toggle  -> GtkSwitch
-#   angka   -> spin button
-#   teks    -> entry
-#   pilihan -> combo (nilai ada di `opsi`)
-#   item    -> entry ID item + pencarian nama
-#   tile    -> entry "x,y x,y"
-# Tiap kontrol menyebut `kunci` = nama atribut di objek fitur, jadi server
-# tidak perlu tahu nama tombol deltaX.
+#   toggle  -> GtkSwitch      angka -> spin button    teks -> entry
+#   pilihan -> combo          item  -> entry ID item  tile -> pemilih grid
+#   tombol  -> tombol aksi (lihat `aksi`, ditangani web.py)
+# `kunci` = nama atribut di objek fitur, jadi server tidak perlu tahu nama
+# tombol deltaX. Daftar & urutannya mengikuti docs/deltax-fitur.json.
 SKEMA_FITUR: list[dict] = [
     {
-        "nama": "Autofarm",
-        "kategori": "automation",
-        "fitur": "autofarm",
-        "keterangan": "panen → tanam → ambil, berulang di tile sasaran",
+        "nama": 'Spammer',
+        "kategori": 'Automation',
+        "fitur": 'spammer',
+        "keterangan": 'spam chat berulang',
         "kontrol": [
-            {"kunci": "seed_id", "label": "Bibit yang ditanam (ID)", "tipe": "item"},
-            {"kunci": "target_tiles", "label": "Tile sasaran", "tipe": "tile", "count": 5},
-            {"kunci": "do_break", "label": "Boleh memecah", "tipe": "toggle"},
-            {"kunci": "do_place", "label": "Boleh menanam", "tipe": "toggle"},
-            {"kunci": "verify", "label": "Cek tile siap panen", "tipe": "toggle"},
-            {"kunci": "verify_pos", "label": "Cek posisi pemain", "tipe": "toggle"},
-            {"kunci": "verify_delay", "label": "Jeda setelah teleport (ms)", "tipe": "angka", "min": 1000, "maks": 10000, "langkah": 100},
-            {"kunci": "punch_count", "label": "Hit count (pukulan per tile)", "tipe": "angka", "min": 1, "maks": 40, "langkah": 1},
-            {"kunci": "punch_delay", "label": "Delay break (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
-            {"kunci": "place_delay", "label": "Delay place (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
-            {"kunci": "siklus_delay", "label": "Jeda antar siklus (ms)", "tipe": "angka", "min": 0, "maks": 60000, "langkah": 100},
-            {"kunci": "faster", "label": "Overclock (potong jeda 40%)", "tipe": "toggle"},
-            {"kunci": "show_punch", "label": "Kirim semua pukulan tanpa jeda", "tipe": "toggle"},
-            {"kunci": "collect", "label": "Ambil objek saat memanen", "tipe": "toggle"},
-            {"kunci": "collect_delay", "label": "Jeda ambil (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
-            {"kunci": "collect_radius", "label": "Radius ambil", "tipe": "angka", "min": 1, "maks": 15, "langkah": 1},
-            {"kunci": "collect_block", "label": "Ikut ambil blok", "tipe": "toggle"},
-            {"kunci": "collect_seed", "label": "Ikut ambil bibit", "tipe": "toggle"},
-            {"kunci": "drop_aktif", "label": "Drop saat inventaris penuh", "tipe": "toggle"},
-            {"kunci": "drop_minimum", "label": "Minimum sebelum drop", "tipe": "angka", "min": 0, "maks": 40000, "langkah": 10},
-            {"kunci": "drop_x", "label": "Drop di X", "tipe": "angka", "min": 0, "maks": 200, "langkah": 1},
-            {"kunci": "drop_y", "label": "Drop di Y", "tipe": "angka", "min": 0, "maks": 200, "langkah": 1},
-            {"kunci": "drop_world", "label": "Dunia tujuan drop", "tipe": "teks"},
-            {"kunci": "drop_mode", "label": "Cara buang", "tipe": "pilihan", "opsi": ["drop", "trash"]},
-            {"kunci": "pick_aktif", "label": "Ambil item di dunia lain", "tipe": "toggle"},
-            {"kunci": "pick_world", "label": "Dunia sumber pick", "tipe": "teks"},
-            {"kunci": "pick_mode", "label": "Mode pick", "tipe": "pilihan", "opsi": ["nearest", "all"]},
+            {"kunci": 'delay', "label": 'Delay spam (ms)', "tipe": 'angka', "min": 100, "maks": 60000, "langkah": 100},
+            {"kunci": 'autodelay', "label": 'Auto delay', "tipe": 'toggle'},
+            {"kunci": 'delay_long', "label": 'Delay detected spam (ms)', "tipe": 'angka', "min": 500, "maks": 300000, "langkah": 500},
+            {"kunci": 'autocolor', "label": 'Random Color', "tipe": 'toggle'},
+            {"kunci": 'shuffle', "label": 'Random Order', "tipe": 'toggle'},
+            {"kunci": 'sendclient', "label": 'Send to Client', "tipe": 'toggle'},
+            {"kunci": 'texttospam', "label": 'Text to spam', "tipe": 'teks'},
+            {"kunci": 'addtolist', "label": 'Add to list', "tipe": 'tombol', "aksi": 'add', "gaya": 'ghost'},
+            {"kunci": 'clearlist', "label": 'Clear list', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+            {"kunci": 'autoenter', "label": 'Auto Re-enter', "tipe": 'toggle'},
+            {"kunci": 'active', "label": 'Auto replay after enter', "tipe": 'toggle'},
+            {"kunci": 'actions', "label": 'Get all actions', "tipe": 'tombol', "aksi": 'ambil_aksi', "gaya": 'ghost'},
         ],
     },
     {
-        "nama": "Auto Collect",
-        "kategori": "collect",
-        "fitur": "autocollect",
-        "keterangan": "ambil objek jatuh di sekitar bot",
+        "nama": 'Autofarm',
+        "kategori": 'Automation',
+        "fitur": 'autofarm',
+        "keterangan": 'break & place: pecah blok lalu taruh blok yang sama',
         "kontrol": [
-            {"kunci": "mode", "label": "Mode ambil", "tipe": "pilihan", "opsi": ["Radius", "Tile"]},
-            {"kunci": "radius", "label": "Radius auto collect", "tipe": "angka", "min": 1, "maks": 11, "langkah": 1},
-            {"kunci": "tiles", "label": "Tile collect", "tipe": "tile", "count": 11},
-            {"kunci": "item_id", "label": "Hanya item ini (ID, 0 = semua)", "tipe": "item"},
-            {"kunci": "delay", "label": "Delay (ms)", "tipe": "angka", "min": 0, "maks": 5000, "langkah": 10},
-            {"kunci": "faster", "label": "Fast take", "tipe": "toggle"},
-            {"kunci": "check", "label": "Check before take", "tipe": "toggle"},
-            {"kunci": "jeda", "label": "Jeda antar siklus (detik)", "tipe": "pecahan", "min": 0, "maks": 30, "langkah": 0.05},
+            {"kunci": 'block_id', "label": 'Block to break & place (ID)', "tipe": 'item'},
+            {"kunci": 'block_mode', "label": 'Mode blok', "tipe": 'pilihan', "opsi": ['auto', 'manual']},
+            {"kunci": 'target_tile', "label": 'Select tile to break', "tipe": 'tile', "count": 5},
+            {"kunci": 'verify', "label": 'Verify before punch', "tipe": 'toggle'},
+            {"kunci": 'do_break', "label": 'Break', "tipe": 'toggle'},
+            {"kunci": 'do_place', "label": 'Place', "tipe": 'toggle'},
+            {"kunci": 'punch_count', "label": 'Hit Count', "tipe": 'angka', "min": 1, "maks": 40, "langkah": 1},
+            {"kunci": 'autopunch_delay', "label": 'Delay Break', "tipe": 'angka', "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": 'autoplace_delay', "label": 'Delay place', "tipe": 'angka', "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": 'debug', "label": 'Autofarm Debug', "tipe": 'toggle'},
+            {"kunci": 'verify_pos', "label": 'Verify pos before continue', "tipe": 'toggle'},
+            {"kunci": 'verify_debug', "label": 'Verify pos debug', "tipe": 'toggle'},
+            {"kunci": 'verify_delay', "label": 'Delay after teleport', "tipe": 'angka', "min": 1000, "maks": 10000, "langkah": 100},
+            {"kunci": 'config_overclock', "label": 'Faster break', "tipe": 'toggle'},
+            {"kunci": 'config_showpunch', "label": 'Show punch', "tipe": 'toggle'},
+            {"kunci": 'autocollect_start', "label": 'Auto collect', "tipe": 'toggle'},
+            {"kunci": 'autocollect_delay', "label": 'Delay', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autocollect_block', "label": 'Collect block', "tipe": 'toggle'},
+            {"kunci": 'autocollect_seed', "label": 'Collect seed', "tipe": 'toggle'},
+            {"kunci": 'autocollect_debug', "label": 'Debug', "tipe": 'toggle'},
+            {"kunci": 'autodrop_start', "label": 'Auto drop', "tipe": 'toggle'},
+            {"kunci": 'autodrop_minimum', "label": 'Minimum to drop', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 10},
+            {"kunci": 'autodrop_x', "label": 'Position x block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autodrop_y', "label": 'Position y block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autodrop_current_pos', "label": 'Current position', "tipe": 'tombol', "aksi": 'pos', "gaya": 'ghost'},
+            {"kunci": 'autodrop_worldname', "label": 'World to drop', "tipe": 'teks'},
+            {"kunci": 'autodrop_worldname_current', "label": 'Current world', "tipe": 'tombol', "aksi": 'aksi', "gaya": 'ghost'},
+            {"kunci": 'autopick_enable', "label": 'Auto pick', "tipe": 'toggle'},
+            {"kunci": 'autopick_world', "label": 'World to pick', "tipe": 'teks'},
+            {"kunci": 'autopick_world_current', "label": 'Current world', "tipe": 'tombol', "aksi": 'world', "gaya": 'ghost'},
+            {"kunci": 'autopick_mode', "label": 'Auto pick mode', "tipe": 'pilihan', "opsi": ['nearest', 'all']},
         ],
     },
     {
-        "nama": "Spammer",
-        "kategori": "spammer",
-        "fitur": "spammer",
-        "keterangan": "kirim teks berulang ke dunia",
+        "nama": 'Automation',
+        "kategori": 'Automation',
+        "fitur": 'automation',
+        "keterangan": 'harvest & plant: panen tanaman lalu tanam bibit',
         "kontrol": [
-            {"kunci": "delay", "label": "Jeda antar pesan (ms)", "tipe": "angka", "min": 100, "maks": 60000, "langkah": 100},
-            {"kunci": "shuffle", "label": "Acak urutan teks", "tipe": "toggle"},
-            {"kunci": "teks", "label": "Daftar teks (satu per baris)", "tipe": "teks_panjang"},
+            {"kunci": 'item', "label": 'Item to farm', "tipe": 'item'},
+            {"kunci": 'autocollect', "label": 'Enable Auto Collect', "tipe": 'toggle'},
+            {"kunci": 'mode', "label": 'Mode', "tipe": 'pilihan', "opsi": ['Plant & Harvest', 'Plant', 'Harvest']},
+            {"kunci": 'safe_delay', "label": 'Safe delay', "tipe": 'toggle'},
+            {"kunci": 'delay_plant', "label": 'Delay plant (ms)', "tipe": 'angka', "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": 'delay_harvest', "label": 'Delay harvest (ms)', "tipe": 'angka', "min": 0, "maks": 5000, "langkah": 10},
+            {"kunci": 'antimiss', "label": 'Anti Miss', "tipe": 'toggle'},
+            {"kunci": 'start_from_bottom', "label": 'Start from bottom', "tipe": 'toggle'},
+            {"kunci": 'autodrop', "label": 'Enable Auto Drop', "tipe": 'toggle'},
+            {"kunci": 'autodrop_minimum', "label": 'Minimum to drop', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 10},
+            {"kunci": 'autodrop_x', "label": 'Drop position X', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autodrop_y', "label": 'Drop position Y', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autodrop_current_pos', "label": 'Current position', "tipe": 'tombol', "aksi": 'pos', "gaya": 'ghost'},
+            {"kunci": 'autodrop_facing', "label": 'Facing when drop', "tipe": 'pilihan', "opsi": ['A', 'B']},
+            {"kunci": 'autotake', "label": 'Enable Auto Take', "tipe": 'toggle'},
+            {"kunci": 'autotake_minimum', "label": 'Minimum to take', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 1},
+            {"kunci": 'autosplice', "label": 'Enable Auto Splice', "tipe": 'toggle'},
+            {"kunci": 'splice_item', "label": 'Item to splice', "tipe": 'item'},
+            {"kunci": 'autosplice_minimum_planted', "label": 'Minimum planted before splice', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 1},
+            {"kunci": 'debug', "label": 'Automation Debug', "tipe": 'toggle'},
+            {"kunci": 'smart_delay', "label": 'Smart Delay', "tipe": 'toggle'},
         ],
     },
     {
-        "nama": "Auto Drop",
-        "kategori": "autodrop",
-        "fitur": "autodrop",
-        "keterangan": "buang item saat inventaris melewati batas",
+        "nama": 'Auto Collect',
+        "kategori": 'Automation',
+        "fitur": 'autocollect',
+        "keterangan": 'ambil objek jatuh di sekitar',
         "kontrol": [
-            {"kunci": "minimum", "label": "Minimum to drop", "tipe": "angka", "min": 0, "maks": 4000, "langkah": 10},
-            {"kunci": "mode", "label": "Cara buang", "tipe": "pilihan", "opsi": ["drop", "trash"]},
-            {"kunci": "jeda", "label": "Jeda antar siklus (detik)", "tipe": "pecahan", "min": 0.2, "maks": 60, "langkah": 0.1},
-            {"kunci": "world", "label": "Dunia tujuan buang", "tipe": "teks"},
-            {"kunci": "x", "label": "Posisi X buang (0 = sekarang)", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
-            {"kunci": "y", "label": "Posisi Y buang (0 = sekarang)", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": 'itemtotake', "label": 'Item', "tipe": 'item'},
+            {"kunci": 'valuetake', "label": 'Specified value', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 1},
+            {"kunci": 'itemdisabletake', "label": 'Item', "tipe": 'item'},
+            {"kunci": 'delay', "label": 'Delay', "tipe": 'angka', "min": 100, "maks": 60000, "langkah": 100},
+            {"kunci": 'faster', "label": 'Fast take', "tipe": 'toggle'},
+            {"kunci": 'check', "label": 'Check before take', "tipe": 'toggle'},
+            {"kunci": 'inventory_check', "label": 'Inventory check', "tipe": 'toggle'},
+            {"kunci": 'debug_area', "label": 'Debug area', "tipe": 'toggle'},
+            {"kunci": 'debug', "label": 'Debug take', "tipe": 'toggle'},
+            {"kunci": 'mode', "label": 'Auto collect mode', "tipe": 'pilihan', "opsi": ['Radius', 'Tile']},
+            {"kunci": 'radius', "label": 'Radius auto collect', "tipe": 'angka', "min": 1, "maks": 15, "langkah": 1},
+            {"kunci": 'tile', "label": 'Select tile to collect', "tipe": 'tile', "count": 5},
         ],
     },
     {
-        "nama": "Path Finder",
-        "kategori": "pathfinder",
-        "fitur": "path",
-        "keterangan": "cari jalan ke koordinat lalu tempuh",
+        "nama": 'Fishing',
+        "kategori": 'Automation',
+        "fitur": 'fishing',
+        "keterangan": 'mancing otomatis (parameter saja)',
         "kontrol": [
-            {"kunci": "x", "label": "Tujuan X", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
-            {"kunci": "y", "label": "Tujuan Y", "tipe": "angka", "min": 0, "maks": 500, "langkah": 1},
-            {"kunci": "block_jump", "label": "Tile padat = penghalang", "tipe": "toggle"},
-            {"kunci": "teleport_path", "label": "Teleport per tile", "tipe": "toggle"},
-            {"kunci": "jeda", "label": "Jeda antar langkah (detik)", "tipe": "pecahan", "min": 0, "maks": 2, "langkah": 0.02},
+            {"kunci": 'config_bait', "label": 'Bait', "tipe": 'item'},
+            {"kunci": 'config_delay', "label": 'Delay after catch', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'config_direct', "label": 'Direction', "tipe": 'pilihan', "opsi": ['A', 'B']},
+            {"kunci": 'config_delaymode', "label": 'Delay after trigger mode', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'config_minimum_to_move', "label": 'Minimum items in front to move', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'autoteleport', "label": 'Auto teleport back', "tipe": 'toggle'},
+            {"kunci": 'automove', "label": 'Auto move', "tipe": 'toggle'},
+            {"kunci": 'action_catch', "label": 'Action after catch', "tipe": 'pilihan', "opsi": ['Auto', 'None']},
+            {"kunci": 'action_catch_filter', "label": 'Filter Action', "tipe": 'pilihan', "opsi": ['All', 'Fish', 'Junk']},
+            {"kunci": 'action_enable', "label": 'Enable Action', "tipe": 'toggle'},
         ],
     },
     {
-        "nama": "Replay",
-        "kategori": "replay",
-        "fitur": "replay",
-        "keterangan": "rekam gerakan lalu putar ulang",
+        "nama": 'AutoCrime',
+        "kategori": 'Automation',
+        "fitur": 'autocrime',
+        "keterangan": 'mode crime (parameter saja)',
         "kontrol": [
-            {"kunci": "rekam", "label": "Mulai rekam", "tipe": "tombol", "aksi": "record", "gaya": "primary"},
-            {"kunci": "berhenti_rekam", "label": "Stop rekam", "tipe": "tombol", "aksi": "stop_record", "gaya": "ghost"},
-            {"kunci": "putar", "label": "Putar rekaman", "tipe": "tombol", "aksi": "play", "gaya": "primary"},
-            {"kunci": "berhenti", "label": "Stop putar", "tipe": "tombol", "aksi": "stop", "gaya": "ghost"},
-            {"kunci": "simpan", "label": "Simpan ke berkas", "tipe": "tombol", "aksi": "save", "gaya": "ghost"},
-            {"kunci": "muat", "label": "Muat dari berkas", "tipe": "tombol", "aksi": "load", "gaya": "ghost"},
-            {"kunci": "hapus", "label": "Hapus rekaman", "tipe": "tombol", "aksi": "clear", "gaya": "danger"},
-            {"kunci": "file", "label": "Nama berkas", "tipe": "teks"},
-            {"kunci": "loop", "label": "Ulang terus", "tipe": "toggle"},
-            {"kunci": "custom_delay", "label": "Jeda khusus (ms)", "tipe": "angka", "min": 0, "maks": 60000, "langkah": 50},
+            {"kunci": 'is_active', "label": 'AutoCrime', "tipe": 'toggle'},
+        ],
+    },
+    {
+        "nama": 'Copy Song',
+        "kategori": 'Automation',
+        "fitur": 'copysong',
+        "keterangan": 'salin lagu dunia (parameter saja)',
+        "kontrol": [
+            {"kunci": 'place_mode', "label": 'Automation mode', "tipe": 'pilihan', "opsi": ['Normal', 'Fast']},
+            {"kunci": 'debug', "label": 'Debug', "tipe": 'toggle'},
+            {"kunci": 'filename', "label": 'Filename', "tipe": 'teks'},
+            {"kunci": 'filename_current', "label": 'Current world', "tipe": 'tombol', "aksi": 'aksi', "gaya": 'ghost'},
+            {"kunci": 'filename_add', "label": 'Add', "tipe": 'tombol', "aksi": 'add', "gaya": 'ghost'},
+            {"kunci": 'file_refresh', "label": 'Refresh', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+            {"kunci": 'refresh_required', "label": 'Refresh required', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+            {"kunci": 'start_copy', "label": 'Copy world song', "tipe": 'tombol', "aksi": 'mulai', "gaya": 'ghost'},
+        ],
+    },
+    {
+        "nama": 'Ghost',
+        "kategori": 'Automation',
+        "fitur": 'ghost',
+        "keterangan": 'ghost/npc (parameter saja)',
+        "kontrol": [
+            {"kunci": 'cheat_auto_esp_ghost', "label": 'Auto Punch Ghost', "tipe": 'toggle'},
+            {"kunci": 'show_punch', "label": 'Show Punch', "tipe": 'toggle'},
+            {"kunci": 'jar', "label": 'Auto put jar', "tipe": 'toggle'},
+            {"kunci": 'config_radius', "label": 'Search Radius', "tipe": 'angka', "min": 0, "maks": 100, "langkah": 1},
+            {"kunci": 'config_min_in_radius', "label": 'Minimum ghost stay before put jar', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'debug', "label": 'Debug', "tipe": 'toggle'},
+            {"kunci": 'debug_distance', "label": 'Show Distance', "tipe": 'toggle'},
+            {"kunci": 'debug_target', "label": 'Show Target', "tipe": 'toggle'},
+            {"kunci": 'debug_line', "label": 'Show Line', "tipe": 'toggle'},
+            {"kunci": 'debug_state', "label": 'Show Ghost State', "tipe": 'toggle'},
+            {"kunci": 'debug_type', "label": 'Show Ghost Type', "tipe": 'toggle'},
+            {"kunci": 'debug_circle', "label": 'Show Radius Rectangle', "tipe": 'toggle'},
+            {"kunci": 'cheat_esp_ghost', "label": 'Esp Ghost', "tipe": 'toggle'},
+            {"kunci": 'auto_teleport', "label": 'Auto Teleport', "tipe": 'toggle'},
+            {"kunci": 'normal', "label": 'Normal Ghost', "tipe": 'toggle'},
+            {"kunci": 'mind', "label": 'Mind Ghost', "tipe": 'toggle'},
+            {"kunci": 'winter', "label": 'Winter Ghost', "tipe": 'toggle'},
+        ],
+    },
+    {
+        "nama": 'Auto Drop',
+        "kategori": 'World',
+        "fitur": 'autodrop',
+        "keterangan": 'buang item saat inventaris melewati batas',
+        "kontrol": [
+            {"kunci": 'minimum', "label": 'Minimum to drop', "tipe": 'angka', "min": 0, "maks": 40000, "langkah": 10},
+            {"kunci": 'mode', "label": 'Cara buang', "tipe": 'pilihan', "opsi": ['drop', 'trash']},
+            {"kunci": 'jeda', "label": 'Jeda antar siklus (detik)', "tipe": 'pecahan', "min": 0.2, "maks": 60, "langkah": 0.1},
+            {"kunci": 'world', "label": 'Dunia tujuan buang', "tipe": 'teks'},
+            {"kunci": 'x', "label": 'Posisi X buang (0 = sekarang)', "tipe": 'angka', "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": 'y', "label": 'Posisi Y buang (0 = sekarang)', "tipe": 'angka', "min": 0, "maks": 500, "langkah": 1},
+        ],
+    },
+    {
+        "nama": 'Path Finder',
+        "kategori": 'World',
+        "fitur": 'path',
+        "keterangan": 'cari jalan ke koordinat lalu tempuh',
+        "kontrol": [
+            {"kunci": 'x', "label": 'Tujuan X', "tipe": 'angka', "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": 'y', "label": 'Tujuan Y', "tipe": 'angka', "min": 0, "maks": 500, "langkah": 1},
+            {"kunci": 'block_jump', "label": 'Tile padat = penghalang', "tipe": 'toggle'},
+            {"kunci": 'teleport_path', "label": 'Teleport per tile', "tipe": 'toggle'},
+            {"kunci": 'debug_paths', "label": 'Debug paths', "tipe": 'toggle'},
+            {"kunci": 'current_loc', "label": 'Debug current location', "tipe": 'toggle'},
+            {"kunci": 'overclock', "label": 'Overclock', "tipe": 'toggle'},
+            {"kunci": 'jeda', "label": 'Jeda antar langkah (detik)', "tipe": 'pecahan', "min": 0, "maks": 2, "langkah": 0.02},
+        ],
+    },
+    {
+        "nama": 'Replay',
+        "kategori": 'Automation',
+        "fitur": 'replay',
+        "keterangan": 'rekam & putar ulang aksi',
+        "kontrol": [
+            {"kunci": 'record_active', "label": 'Record', "tipe": 'toggle'},
+            {"kunci": 'play_active', "label": 'Play', "tipe": 'toggle'},
+            {"kunci": 'loop', "label": 'Loop', "tipe": 'toggle'},
+            {"kunci": 'record_active_raw', "label": 'Raw Packet', "tipe": 'toggle'},
+            {"kunci": 'record_active_text', "label": 'Text Packet', "tipe": 'toggle'},
+            {"kunci": 'custom_delay', "label": 'Custom delay (ms)', "tipe": 'angka', "min": 0, "maks": 60000, "langkah": 50},
+            {"kunci": 'clear', "label": 'Clear Actions', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+            {"kunci": 'filename', "label": 'Filename', "tipe": 'teks'},
+            {"kunci": 'filename_add', "label": 'Add', "tipe": 'tombol', "aksi": 'add', "gaya": 'ghost'},
+            {"kunci": 'action_refresh', "label": 'Refresh', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+            {"kunci": 'file_refresh', "label": 'Refresh', "tipe": 'tombol', "aksi": 'refresh', "gaya": 'ghost'},
+        ],
+    },
+    {
+        "nama": 'Auto Wrench',
+        "kategori": 'Automation',
+        "fitur": 'autowrench',
+        "keterangan": 'wrench pemain/tile berkala',
+        "kontrol": [
+            {"kunci": 'fastwrench', "label": 'Fast wrench mode', "tipe": 'pilihan', "opsi": ['Normal', 'Fast', 'Turbo']},
+            {"kunci": 'fastwrench_enable', "label": 'Enable', "tipe": 'toggle'},
+            {"kunci": 'fastwrench_enhanced', "label": 'Enhanced Mode', "tipe": 'toggle'},
+            {"kunci": 'autowrench', "label": 'Auto Wrench', "tipe": 'toggle'},
+            {"kunci": 'autowrench_mode', "label": 'Auto wrench mode', "tipe": 'pilihan', "opsi": ['Player', 'Tile']},
+        ],
+    },
+    {
+        "nama": 'Moderator Exit',
+        "kategori": 'Automation',
+        "fitur": 'modexit',
+        "keterangan": 'keluar cepat saat moderator masuk',
+        "kontrol": [
+            {"kunci": 'enable', "label": 'Enable', "tipe": 'toggle'},
+            {"kunci": 'mode', "label": 'Autoexit mode', "tipe": 'pilihan', "opsi": ['Plant & Harvest', 'Plant', 'Harvest']},
+            {"kunci": 'drop_world', "label": 'World to drop', "tipe": 'teks'},
+            {"kunci": 'current_world', "label": 'Current world', "tipe": 'tombol', "aksi": 'world', "gaya": 'ghost'},
+            {"kunci": 'drop_pos_x', "label": 'Position x block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'drop_pos_y', "label": 'Position y block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'current_drop', "label": 'Current position', "tipe": 'tombol', "aksi": 'pos', "gaya": 'ghost'},
+            {"kunci": 'donate_world', "label": 'World to donate', "tipe": 'teks'},
+            {"kunci": 'current_world_donate', "label": 'Current world', "tipe": 'tombol', "aksi": 'world', "gaya": 'ghost'},
+            {"kunci": 'donate_player_pos_x', "label": 'Position x block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'donate_player_pos_y', "label": 'Position y block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'current_donate', "label": 'Current position', "tipe": 'tombol', "aksi": 'pos', "gaya": 'ghost'},
+            {"kunci": 'donate_pos_x', "label": 'Position x block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'donate_pos_y', "label": 'Position y block', "tipe": 'angka', "min": 0, "maks": 100000, "langkah": 1},
+            {"kunci": 'find_donate', "label": 'Auto find nearest', "tipe": 'tombol', "aksi": 'cari', "gaya": 'ghost'},
+            {"kunci": 'DEBUG_MOD_JOIN', "label": 'Trigger', "tipe": 'tombol', "aksi": 'trigger', "gaya": 'ghost'},
         ],
     },
 ]
 
 
+
+# Kunci skema = nama atribut nyata di objek fitur. Tabel ini menerjemahkan
+# nama kolom deltaX (yang dipakai saat membangun daftar di atas) ke atribut
+# yang benar-benar dibaca kode, supaya Simpan/Nyalakan tidak mengirim kunci
+# yang tidak dikenal.
+_ALIAS_ATTR: dict[str, dict[str, str]] = {
+    "spammer": {
+        "texttospam": "teks",
+        "active": "replay_after_enter",
+    },
+    "autofarm": {
+        "item_picker": "block_id",
+        "target_tile": "target_tiles",
+        "autopunch_delay": "punch_delay",
+        "autoplace_delay": "place_delay",
+        "config_overclock": "faster",
+        "config_showpunch": "show_punch",
+        "autocollect_start": "collect",
+        "autocollect_delay": "collect_delay",
+        "autocollect_block": "collect_block",
+        "autocollect_seed": "collect_seed",
+        "autodrop_start": "drop_aktif",
+        "autodrop_minimum": "drop_minimum",
+        "autodrop_x": "drop_x",
+        "autodrop_y": "drop_y",
+        "autodrop_worldname": "drop_world",
+        "autopick_enable": "pick_aktif",
+        "autopick_world": "pick_world",
+        "autopick_mode": "pick_mode",
+    },
+    "autocollect": {
+        "itemtotake": "item_id",
+        "valuetake": "nilai",
+        "itemdisabletake": "item_disable",
+        "tile": "tiles",
+    },
+    "replay": {
+        "record_active": "aktif",
+        "play_active": "memutar",
+        "record_active_raw": "raw",
+        "record_active_text": "text_packet",
+        "filename": "file",
+    },
+    "autowrench": {
+        "fastwrench_enhanced": "enhanced",
+        "autowrench_mode": "mode",
+    },
+    "fishing": {
+        "config_bait": "bait",
+        "config_delay": "delay",
+        "config_direct": "direct",
+        "config_delaymode": "delaymode",
+        "config_minimum_to_move": "minimum_to_move",
+        "action_catch_filter": "action_catch_filter",
+    },
+    "ghost": {
+        "cheat_auto_esp_ghost": "auto_esp_ghost",
+        "show_punch": "auto_esp_ghost_show_punch",
+        "jar": "auto_esp_ghost_jar",
+        "config_radius": "radius",
+        "config_min_in_radius": "min_in_radius",
+        "debug": "auto_esp_ghost_debug",
+    },
+    "copysong": {
+        "place_mode": "place_mode",
+        "start_copy": "start_copy",
+    },
+}
+
+for _kat in SKEMA_FITUR:
+    _peta = _ALIAS_ATTR.get(_kat["fitur"], {})
+    for _k in _kat["kontrol"]:
+        _asli = _k["kunci"]
+        _baru = _peta.get(_asli, _asli)
+        if _baru != _asli:
+            _k["alias"] = _asli
+            _k["kunci"] = _baru
+
+
 def skema_fitur() -> list[dict]:
     """Skema panel untuk GUI (kategori + kontrol + nilai sekarang)."""
     return SKEMA_FITUR
+
+
+def parameter_default(fitur: str) -> dict[str, Any]:
+    """Nilai awal tiap kontrol satu kategori, diturunkan dari SKEMA_FITUR.
+
+    Dipakai `FiturBot` untuk memasang atribut yang belum ada (kolom deltaX
+    yang paketnya belum terbukti). Turunan, bukan tabel kedua: kalau skema
+    berubah, default ikut berubah.
+    """
+    out: dict[str, Any] = {}
+    for kat in SKEMA_FITUR:
+        if kat["fitur"] != fitur:
+            continue
+        for k in kat["kontrol"]:
+            tipe = k["tipe"]
+            if tipe == "tombol":
+                continue
+            if tipe == "toggle":
+                out.setdefault(k["kunci"], False)
+            elif tipe == "angka":
+                out.setdefault(k["kunci"], k.get("min", 0))
+            elif tipe == "pilihan":
+                out.setdefault(k["kunci"], (k.get("opsi") or [""])[0])
+            elif tipe == "tile":
+                out.setdefault(k["kunci"], [])
+            elif tipe == "item":
+                out.setdefault(k["kunci"], 0)
+            else:
+                out.setdefault(k["kunci"], "")
+    return out

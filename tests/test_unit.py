@@ -358,6 +358,33 @@ def test_addbot_tabel() -> None:
     cek("updateProxy()", bool(g["update_proxy"]))
 
 
+def test_perintah_tanpa_argumen() -> None:
+    bagian("6b. Runner: respawn/collect/say tanpa nama bot")
+    from types import SimpleNamespace
+
+    from lucifer.runner import Runner
+
+    dipanggil: list[str] = []
+    palsu = SimpleNamespace(
+        respawn=lambda: dipanggil.append("respawn") or True,
+        collect=lambda range_=3: dipanggil.append(f"collect:{range_}") or 0,
+        say=lambda teks: dipanggil.append(f"say:{teks}") or True,
+    )
+    r = Runner()
+    r.engine = SimpleNamespace(bots={"uji": palsu}, parent=palsu)
+
+    # Tombol GUI mengirim perintah TELANJANG (label disisipkan web.py).
+    cek("respawn tanpa argumen", r.command("respawn").get("ok") is True)
+    cek("collect tanpa argumen", r.command("collect").get("ok") is True)
+    cek("collect <radius>", r.command("collect 5").get("collected") == 0)
+    cek("collect meneruskan radius", "collect:5" in dipanggil)
+    cek("respawn kedua", r.command("respawn").get("ok") is True)
+    cek("say tanpa label", r.command("say hai").get("ok") is True)
+    cek("say meneruskan teks", "say:hai" in dipanggil)
+    cek(r.command("respawn tidakada").get("ok") is False,
+        "label tak dikenal harus gagal, bukan diam-diam ke bot lain")
+
+
 def test_bot_aksi() -> None:
     bagian("7. Bot: semua aksi mengirim paket yang benar")
     from lucifer.account import Account
@@ -392,10 +419,14 @@ def test_bot_aksi() -> None:
         ("drop", lambda: bot.drop(242, 1)),
         ("trash", lambda: bot.trash(2, 1)),
         ("moveTile", lambda: bot.moveTile(12, 12)),
-        ("collectObject", lambda: bot.collectObject(12345, 3)),
         ("leaveWorld", lambda: bot.leaveWorld()),
         ("respawn", lambda: bot.respawn()),
     ]
+    # collectObject butuh objek nyata di dunia (paket type 11 memakai posisi
+    # piksel + uid objek), jadi daftarkan satu item jatuh dulu.
+    from lucifer.world import DroppedItem
+    bot.world.dropped.append(DroppedItem(item_id=242, x=384.0, y=352.0, count=1, uid=12345))
+    aksi.append(("collectObject", lambda: bot.collectObject(12345, 3)))
     for nama, fn in aksi:
         sebelum = len(teks) + len(tank)
         try:
@@ -425,6 +456,31 @@ def test_bot_aksi() -> None:
         f"{len(tanks)} paket Tank: {[(t.int_x, t.int_y, t.value) for t in tanks]}")
     cek("paket Tank: hit mengirim koordinat",
         any(t.int_x == 10 and t.int_y == 10 for t in tanks))
+    # tileChange: type 3 (bukan 7) + value item. 18 = Fist, 32 = Wrench.
+    # Posisi piksel (vector_x/vector_y) wajib; server memakainya untuk
+    # validasi jangkauan. Tile kosong -> posisi tile (x*32).
+    cek("hit = type 3 value 18 (Fist) + posisi piksel",
+        any(t.type == 3 and t.value == 18 and t.int_x == 10
+            and abs(t.vector_x - 320.0) < 0.5 for t in tanks),
+        str([(t.type, t.value, t.vector_x) for t in tanks]))
+    cek("place = type 3 value item + posisi piksel",
+        any(t.type == 3 and t.value == 2 and t.int_x == 10 and t.int_y == 11
+            and abs(t.vector_x - 320.0) < 0.5 and abs(t.vector_y - 352.0) < 0.5
+            for t in tanks),
+        str([(t.type, t.value, t.vector_x, t.vector_y) for t in tanks]))
+    cek("wrench tile = type 3 value 32",
+        any(t.type == 3 and t.value == 32 for t in tanks),
+        str([(t.type, t.value) for t in tanks]))
+    # collect: type 11 (ItemActivateObjectRequest), posisi PIKSEl + uid objek
+    # (bukan action|collect — versi lama tidak pernah direspons server).
+    cek("collectObject memakai Tank type 11",
+        any(t.type == 11 for t in tanks),
+        f"tipe: {[t.type for t in tanks]}")
+    cek("collectObject mengirim posisi piksel + uid",
+        any(t.type == 11 and t.value == 12345
+            and abs(t.vector_x - 384.0) < 0.5 and abs(t.vector_y - 352.0) < 0.5
+            for t in tanks),
+        str([(t.type, t.value, t.vector_x, t.vector_y) for t in tanks]))
     # drop/trash memakai paket TEKS (action|drop), bukan Tank
     cek("paket 'drop' pakai action|drop + itemID",
         any("action|drop" in s and "itemID|242" in s for s in isi), str(isi)[:120])
@@ -452,6 +508,35 @@ def test_bot_aksi() -> None:
     # pathfinding
     path = bot.getPath(5, 5)
     cek("getPath() mengembalikan daftar", isinstance(path, list), f"{len(path)} langkah")
+
+    # auto-collect otomatis saat item jatuh (type 14 netid -1).
+    # Server TIDAK meminta bot menekan tombol: deltaX bereaksi pada paket ini.
+    # `value` pada paket ini = item_id, uid baru dibuat dari World.last_uid.
+    from lucifer.protocol import Tank as _T2
+    bot.auto_collect = True
+    bot.auto_collect_radius = 3
+    bot._running = True
+    bot.local.posx, bot.local.posy = 384.0, 352.0
+    bot.world.dropped.clear()
+    bot.world.last_uid = 100
+    tank.clear()
+    bot._apply_item_change(
+        _T2(type=14, net_id=0xFFFFFFFF, value=555,
+            vector_x=400.0, vector_y=360.0), b"")
+    baru = [d for d in bot.world.dropped if d.item_id == 555]
+    cek("item jatuh menambah world.dropped", bool(baru), str(bot.world.dropped))
+    cek("uid objek baru = last_uid + 1", bool(baru) and baru[0].uid == 101,
+        str([d.uid for d in baru]))
+    import time as _t
+    _t.sleep(0.15)   # auto-ambil menunggu 30 ms lalu kirim type 11
+    cek("auto-collect mengirim type 11 tanpa disuruh",
+        any(t.type == 11 and t.value == 101 for t in tank),
+        str([(t.type, t.value) for t in tank]))
+
+    # item diambil orang lain (netid pemain) -> hilang dari world.dropped
+    bot._apply_item_change(_T2(type=14, net_id=6, value=101), b"")
+    cek("pickup menghapus objek dari world.dropped",
+        not any(d.uid == 101 for d in bot.world.dropped), str(bot.world.dropped))
 
 
 def test_login_payload_mobile() -> None:
@@ -717,6 +802,7 @@ def test_captcha_callback() -> None:
     """
     bagian("12. captcha: tertangkap dari callback onShowCaptcha")
     from lucifer.bot import Bot
+    from lucifer.protocol import Tank as _Tank
     from lucifer.protocol import Variant, VariantList
 
     b = Bot(label="uji-cap", account=None)  # type: ignore[arg-type]
@@ -897,6 +983,106 @@ def test_token_dari_halaman() -> None:
         cek(f"input {buruk[:14]!r} -> tidak error", t == "", repr((t, p)))
 
 
+def test_relay_udp() -> None:
+    """Pembungkus/buka header SOCKS5 UDP + penolakan paket cacat.
+
+    Latar: `enet_host_use_proxy()` di enet.so rusak (kirim greeting lalu
+    tutup soket), jadi proxy ditangani `lucifer.udprelay`. Kalau parsing
+    header salah, semua balasan hilang tanpa error — makanya diuji.
+    """
+    from lucifer.proxy import Proxy
+    from lucifer.udprelay import RelayUdp
+
+    r = RelayUdp(Proxy("1.2.3.4", 1080), ("9.9.9.9", 53))
+    hdr = r._header_target
+    cek("header tujuan = ATYP domain + port 53",
+        hdr == b"\x00\x00\x00\x03\x079.9.9.9\x00\x35", hdr.hex())
+    cek("payload dibungkus setelah header", r._bingkus(b"abc") == hdr + b"abc")
+
+    cek("buka: IPv4", r._buka(hdr + b"payload") == b"payload")
+    dom = b"\x00\x00\x00\x03\x07example\x00\x35" + b"isi"
+    cek("buka: domain", r._buka(dom) == b"isi")
+    v6 = b"\x00\x00\x00\x04" + b"\x00" * 16 + b"\x00\x35" + b"hai"
+    cek("buka: IPv6", r._buka(v6) == b"hai")
+    cek("tolak frag != 0",
+        r._buka(b"\x00\x00\x01\x01" + b"\x00" * 6 + b"x") is None)
+    cek("tolak data pendek", r._buka(b"\x00\x00") is None)
+    cek("tolak RSV bukan nol",
+        r._buka(b"\x01\x00\x00\x01" + b"\x00" * 6 + b"x") is None)
+    cek("statistik awal nol", r.statistik == {"kirim": 0, "terima": 0, "lokal": 0},
+        str(r.statistik))
+
+
+def test_status_gems_level() -> None:
+    bagian("7b. Status: gems dari OnSetBux, level dari dialog profil")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank as _Tank
+    from lucifer.protocol import Variant, VariantList
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.send_raw = lambda *a, **k: True  # type: ignore[method-assign]
+
+    # OnSetBux(<gems>, <animate>, <supporter>, vec3) -> arg1 = gems
+    vl = VariantList()
+    vl.append(Variant.from_string("OnSetBux"))
+    vl.append(Variant.from_int(4321))
+    vl.append(Variant.from_int(1))
+    vl.append(Variant.from_int(0))
+    bot._handle_variant(vl.serialize(), _Tank())
+    cek("gems dari OnSetBux", bot.gem_count == 4321, str(bot.gem_count))
+
+    # Dialog profil: `add_player_info|<nama>|<level>|<xp>|<xp_next>|`
+    teks = ("add_popup_name|WrenchMenu\n"
+            "add_player_info|Isan|37|1200|2500|\n"
+            "add_button|ok|OK|\n")
+    cek("level dari add_player_info", bot._baca_level_dialog(teks) is True)
+    cek("level tersimpan", bot.level == 37, str(bot.level))
+
+    # Dialog toko tidak boleh dianggap level.
+    bot.level = 0
+    cek("dialog lain tidak mengisi level",
+        bot._baca_level_dialog("add_player_info|Toko|999999|||") is False
+        and bot.level == 0)
+
+    # UpdateStatus hanya jalur cadangan (format server privat).
+    bot._apply_status(b"level|12\ngems|99\n")
+    cek("UpdateStatus cadangan: level", bot.level == 12, str(bot.level))
+    cek("UpdateStatus cadangan: gems", bot.gem_count == 99, str(bot.gem_count))
+
+
+def test_tile_update_koordinat() -> None:
+    bagian("7c. SendTileUpdateData: koordinat dari tank, ext = blok")
+    import struct
+
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 5, 5
+    for y in range(5):
+        for x in range(5):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=6))
+    w.tile(2, 3).fg = 100
+    bot.world = w
+
+    # Blok pecah: fg jadi 0, koordinat di int_x/int_y (bukan di ext).
+    ext = struct.pack("<HHHH", 0, 6, 0, 0)
+    bot._apply_tile_update(Tank(type=5, int_x=2, int_y=3), ext)
+    cek("tile dipecah lewat koordinat tank", w.tile(2, 3).fg == 0,
+        str(w.tile(2, 3)))
+
+    ext = struct.pack("<HHHH", 2, 6, 0, 0)
+    bot._apply_tile_update(Tank(type=5, int_x=2, int_y=3), ext)
+    cek("tile ditaruh lewat koordinat tank", w.tile(2, 3).fg == 2,
+        str(w.tile(2, 3)))
+
+
 def main() -> int:
     print("\033[1m" + "=" * 62)
     print(" UJI UNIT LUCIFER LINUX (tanpa jaringan)")
@@ -906,8 +1092,11 @@ def main() -> int:
                test_login_payload_mobile, test_client_data_konsisten,
                test_remove_color, test_maintenance, test_captcha_callback,
                test_logon_fail_cooldown, test_hint_login_tidak_salah_menyebut_sandi,
+               test_perintah_tanpa_argumen,
+               test_status_gems_level, test_tile_update_koordinat,
                test_google_oauth, test_google_state_wajib,
-               test_pisah_code_state, test_token_dari_halaman):
+               test_pisah_code_state, test_token_dari_halaman,
+               test_relay_udp):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

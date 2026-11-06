@@ -35,7 +35,9 @@ mkdir -p "$(dirname "$BIN_DST")" "$(dirname "$ICON_DST")" "$DESK_DIR"
 install -m 755 "$BIN_SRC" "$BIN_DST"
 install -m 644 "$ICON_SRC" "$ICON_DST"
 
-sed "s|^Exec=.*|Exec=$BIN_DST|" "$DIR/deploy/lucifer.desktop" >"$DESK"
+# --repo wajib: backend di-spawn dengan cwd repo supaya data/items.dat
+# ketemu. Tanpa ini items_db kosong dan semua /api/sprite balas 404.
+sed "s|^Exec=.*|Exec=$BIN_DST --repo $DIR|" "$DIR/deploy/lucifer.desktop" >"$DESK"
 chmod 644 "$DESK"
 
 update-desktop-database "$DESK_DIR" 2>/dev/null || true

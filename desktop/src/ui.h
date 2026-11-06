@@ -69,7 +69,6 @@ private:
     void build_ui();
     void apply_css();
     void start_backend();
-    GtkWidget *make_header();
     GtkWidget *tab_bots();
     GtkWidget *tab_executor();
     GtkWidget *tab_proxy();
@@ -79,6 +78,7 @@ private:
     GtkWidget *detail_fitur();
     void build_sidebar(const std::string &pilih);
     void build_feature_page(const std::string &nama, const std::string &ket,
+                            const std::string &kategori,
                             const std::string &fitur, JsonArray *kontrol,
                             JsonObject *nilai);
     GtkWidget *detail_chat();
@@ -86,6 +86,7 @@ private:
     GtkWidget *detail_map();
     GtkWidget *detail_inv();
     GtkWidget *detail_info();
+    GtkWidget *detail_paket();
 
     // -- util widget --
     GtkWidget *toolbtn(const char *label, GCallback cb, const char *cls = nullptr);
@@ -103,15 +104,18 @@ private:
     void refresh_detail_chat();
     void refresh_detail_map();
     void refresh_detail_inv();
+    void refresh_detail_paket();
 
     void set_console(const std::string &teks);
     void append_console(const std::string &teks);
     std::string selected_bot();
+    std::vector<std::string> selected_bots();
     std::string selected_script();
     std::string selected_proxy_key();
     std::string proxy_host_port();
     std::string opts_fitur(const std::string &fitur);
     void simpan_fitur(const std::string &fitur, bool nyalakan);
+    void kirim_ke_terpilih(const std::string &perintah, const std::string &tag);
 
     bool post_ok(const std::string &path, const std::string &json, std::string *err);
     JsonObject *get_obj(const std::string &path);
@@ -121,6 +125,16 @@ private:
     static void on_del_bot(GtkButton *, gpointer);
     static void on_connect(GtkButton *, gpointer);
     static void on_disconnect(GtkButton *, gpointer);
+    static void on_connect_semua(GtkButton *, gpointer);
+    static void on_disconnect_semua(GtkButton *, gpointer);
+    static void on_move(GtkButton *, gpointer);
+    static void on_respawn(GtkButton *, gpointer);
+    static void on_collect(GtkButton *, gpointer);
+    static void on_profil(GtkButton *, gpointer);
+    static void on_warp(GtkWidget *, gpointer);
+    static void on_pilih_semua(GtkButton *, gpointer);
+    static void on_multi_select(GtkToggleButton *, gpointer);
+    static void on_toggle_bot(GtkCellRendererToggle *, gchar *, gpointer);
     static void on_refresh(GtkButton *, gpointer);
     static void on_clear_log(GtkButton *, gpointer);
     static void on_bot_row(GtkTreeView *, gpointer);
@@ -132,7 +146,7 @@ private:
     static void on_fitur_simpan(GtkButton *, gpointer);
     static void on_fitur_start(GtkButton *, gpointer);
     static void on_fitur_stop(GtkButton *, gpointer);
-    static void on_replay_aksi(GtkButton *, gpointer);
+    static void on_fitur_tombol(GtkButton *, gpointer);
     static void on_detail_row(GtkListBox *, GtkListBoxRow *, gpointer);
     static gboolean on_map_draw(GtkWidget *, cairo_t *, gpointer);
     static gboolean on_map_motion(GtkWidget *, GdkEventMotion *, gpointer);
@@ -141,7 +155,9 @@ private:
                          GtkWidget **entry_out);
     void isi_grid(GridSel *g);
     std::pair<int, int> tile_player() const;
-    static void on_open_bot(GtkTreeView *, gpointer);
+    static void on_bot_select(GtkTreeView *, gpointer);
+    static void on_open_bot(GtkTreeView *, GtkTreePath *, GtkTreeViewColumn *,
+                            gpointer);
     static void on_back_bots(GtkButton *, gpointer);
     static void on_token_hp(GtkButton *, gpointer);
     static void on_save_script(GtkButton *, gpointer);
@@ -162,6 +178,8 @@ private:
     struct HasilCmd { App *app; std::string cmd; std::string pesan; };
     static gboolean tampil_hasil_cmd(gpointer);
     static void on_destroy(GtkWidget *, gpointer);
+    static void on_minimize(GtkButton *, gpointer);
+    static void on_quit(GtkButton *, gpointer);
 
     void dialog_add_bot();
     void dialog_add_proxy();
@@ -189,6 +207,10 @@ private:
     GtkWidget *view_bots_ = nullptr;
     GtkWidget *bots_bar_ = nullptr;
     GtkWidget *search_bots_ = nullptr;
+    GtkWidget *entry_warp_ = nullptr;
+    // Label bot yang dicentang di kolom PILIH. Disimpan terpisah karena
+    // tabel di-rebuild tiap tick (1,5 dtk) sehingga state widget hilang.
+    std::set<std::string> dipilih_;
 
     // detail bot
     std::string aktif_;              // label bot yang sedang dibuka
@@ -209,6 +231,8 @@ private:
     GtkWidget *inv_note_ = nullptr;
     std::string inv_ttd_;             // tanda isi terakhir, hindari bangun ulang
     GtkWidget *detail_info_ = nullptr;
+    GtkWidget *view_paket_ = nullptr;
+    std::string paket_ttd_;
     int chat_lines_ = 0;
     int console_lines_ = 0;
     int tick_n_ = 0;
@@ -237,7 +261,12 @@ private:
         JsonObject *obj = nullptr;  // objek fitur di server (untuk baca nilai)
     };
     std::vector<Ctrl> ctrls_;
-    std::map<std::string, GtkWidget *> halaman_fitur_;
+    struct HalamanFitur {
+        GtkWidget *w = nullptr;
+        std::string kategori;   // judul grup di sidebar ("Automation")
+        int urut = 0;           // urutan dari skema server (bukan alfabet)
+    };
+    std::map<std::string, HalamanFitur> halaman_fitur_;
     std::map<std::string, std::string> kunci_fitur_;  // label -> kunci API
     bool skema_siap_ = false;
 

@@ -274,6 +274,15 @@ progressbar progress { background-color: #e5484d; border-radius: 99px; min-heigh
 
 /* ---- sidebar mod menu ---- */
 list.navrow, row.navrow { background-color: transparent; }
+/* judul grup (Automation / World): tidak bisa dipilih, jadi jangan
+   diberi hover/sorotan seperti baris fitur. */
+list > row:nth-child(n) label.sectitle {
+  color: #6b7482;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+}
+row:selected label.sectitle { color: #6b7482; }
 list { background-color: transparent; }
 list > row {
   border-radius: 7px;
@@ -354,35 +363,6 @@ GtkWidget *App::field(const char *label, GtkWidget *w) {
     return b;
 }
 
-// ------------------------------------------------------------- header ---
-GtkWidget *App::make_header() {
-    GtkWidget *hb = gtk_header_bar_new();
-    gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(hb), TRUE);
-    // tombol jendela di kanan, gaya Windows seperti screenshot Lucifer
-    gtk_header_bar_set_decoration_layout(GTK_HEADER_BAR(hb), ":minimize,maximize,close");
-
-    GtkWidget *brand = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *logo = gtk_label_new("LUCIFER");
-    gtk_widget_set_name(logo, "brand");
-    GtkWidget *ver = gtk_label_new("Linux 2.88");
-    GtkStyleContext *vc = gtk_widget_get_style_context(ver);
-    gtk_style_context_add_class(vc, "dim");
-    gtk_box_pack_start(GTK_BOX(brand), logo, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(brand), ver, FALSE, FALSE, 0);
-    gtk_header_bar_set_custom_title(GTK_HEADER_BAR(hb), brand);
-
-    header_status_ = gtk_label_new("●  offline");
-    gtk_widget_set_name(header_status_, "statuspill");
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(hb), header_status_);
-
-    header_sub_ = gtk_label_new("0 bot");
-    GtkStyleContext *sc = gtk_widget_get_style_context(header_sub_);
-    gtk_style_context_add_class(sc, "dim");
-    gtk_widget_set_margin_end(header_sub_, 10);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(hb), header_sub_);
-    return hb;
-}
-
 // --------------------------------------------------------------- Bots ---
 static void add_col(GtkWidget *view, const char *title, int idx, int width) {
     GtkCellRenderer *r = gtk_cell_renderer_text_new();
@@ -417,16 +397,36 @@ GtkWidget *App::tab_bots() {
     gtk_widget_set_size_request(search_bots_, 220, -1);
     g_signal_connect(search_bots_, "search-changed", G_CALLBACK(on_refresh), this);
     gtk_box_pack_start(GTK_BOX(bar), search_bots_, FALSE, FALSE, 0);
+    header_sub_ = gtk_label_new("0 bot");
+    gtk_style_context_add_class(gtk_widget_get_style_context(header_sub_), "dim");
+    gtk_box_pack_start(GTK_BOX(bar), header_sub_, FALSE, FALSE, 6);
+    header_status_ = gtk_label_new("â  offline");
+    gtk_widget_set_name(header_status_, "statuspill");
+    gtk_box_pack_start(GTK_BOX(bar), header_status_, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), toolbtn("Segarkan", G_CALLBACK(on_refresh), "ghost"), FALSE, FALSE, 0);
+    // Tanpa headerbar: Hyprland tidak memakai dekorasi server-side, jadi
+    // tombol minimize/exit disediakan sendiri di toolbar.
+    // Ikon simbolik, bukan karakter teks: font sistem sering tak punya
+    // glyph "—"/"✕" sehingga tampil kotak tofu.
+    GtkWidget *b_min = gtk_button_new_from_icon_name("window-minimize-symbolic",
+                                                     GTK_ICON_SIZE_BUTTON);
+    GtkWidget *b_close = gtk_button_new_from_icon_name("window-close-symbolic",
+                                                       GTK_ICON_SIZE_BUTTON);
+    gtk_style_context_add_class(gtk_widget_get_style_context(b_min), "ghost");
+    gtk_style_context_add_class(gtk_widget_get_style_context(b_close), "danger");
+    g_signal_connect(b_min, "clicked", G_CALLBACK(on_minimize), this);
+    g_signal_connect(b_close, "clicked", G_CALLBACK(on_quit), this);
+    gtk_box_pack_start(GTK_BOX(bar), b_min, FALSE, FALSE, 8);
+    gtk_box_pack_start(GTK_BOX(bar), b_close, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v), bar, FALSE, FALSE, 0);
 
     GtkWidget *body = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_paned_set_position(GTK_PANED(body), 190);
+    gtk_paned_set_position(GTK_PANED(body), 258);
     gtk_box_pack_start(GTK_BOX(v), body, TRUE, TRUE, 12);
 
     // ---- panel kiri ala Lucifer ----
     GtkWidget *kiri = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_widget_set_size_request(kiri, 178, -1);
+    gtk_widget_set_size_request(kiri, -1, -1);
     GtkStyleContext *kc = gtk_widget_get_style_context(kiri);
     gtk_style_context_add_class(kc, "card");
 
@@ -436,14 +436,85 @@ GtkWidget *App::tab_bots() {
     gtk_style_context_add_class(lkc, "cardtitle");
     gtk_box_pack_start(GTK_BOX(kiri), lk, FALSE, FALSE, 0);
 
-    GtkWidget *b_all = toolbtn("Pilih Semua", G_CALLBACK(on_refresh), "ghost");
+    GtkWidget *b_all = toolbtn("Pilih Semua", G_CALLBACK(on_pilih_semua), "ghost");
     gtk_widget_set_hexpand(b_all, TRUE);
     gtk_box_pack_start(GTK_BOX(kiri), b_all, FALSE, FALSE, 0);
 
     GtkWidget *multi = gtk_check_button_new_with_label("Multi-Select");
     GtkStyleContext *mc = gtk_widget_get_style_context(multi);
     gtk_style_context_add_class(mc, "dim");
+    g_signal_connect(multi, "toggled", G_CALLBACK(on_multi_select), this);
     gtk_box_pack_start(GTK_BOX(kiri), multi, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(kiri), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 4);
+
+    GtkWidget *lac0 = gtk_label_new("KONTROL");
+    gtk_widget_set_halign(lac0, GTK_ALIGN_START);
+    GtkStyleContext *lac0c = gtk_widget_get_style_context(lac0);
+    gtk_style_context_add_class(lac0c, "cardtitle");
+    gtk_box_pack_start(GTK_BOX(kiri), lac0, FALSE, FALSE, 0);
+
+    GtkWidget *b_conn = toolbtn("Connect", G_CALLBACK(on_connect), "ghost");
+    GtkWidget *b_disc = toolbtn("Disconnect", G_CALLBACK(on_disconnect), "ghost");
+    GtkWidget *b_conn_all = toolbtn("Connect Semua", G_CALLBACK(on_connect_semua), "ghost");
+    GtkWidget *b_disc_all = toolbtn("Disconnect Semua", G_CALLBACK(on_disconnect_semua), "ghost");
+    // Dua kolom: panel kiri dulu setinggi > layar 768 sehingga tombol bawah
+    // tidak kelihatan. Grid 2x2 memotong tinggi hampir separuh.
+    GtkWidget *grid_kontrol = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid_kontrol), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid_kontrol), 6);
+    gtk_grid_set_column_homogeneous(GTK_GRID(grid_kontrol), TRUE);
+    gtk_widget_set_hexpand(b_conn, TRUE);
+    gtk_widget_set_hexpand(b_disc, TRUE);
+    gtk_widget_set_hexpand(b_conn_all, TRUE);
+    gtk_widget_set_hexpand(b_disc_all, TRUE);
+    gtk_grid_attach(GTK_GRID(grid_kontrol), b_conn, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_kontrol), b_disc, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_kontrol), b_conn_all, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_kontrol), b_disc_all, 1, 1, 1, 1);
+    gtk_box_pack_start(GTK_BOX(kiri), grid_kontrol, FALSE, FALSE, 0);
+
+    // Grid arah gerak: satu klik = satu langkah tile bot terpilih.
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 2);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 2);
+    struct { const char *lbl; const char *arah; int cx, cy; } panah[] = {
+        {"↑", "up", 1, 0}, {"←", "left", 0, 1},
+        {"↓", "down", 1, 1}, {"→", "right", 2, 1},
+    };
+    for (auto &p : panah) {
+        GtkWidget *b = toolbtn(p.lbl, G_CALLBACK(on_move), "ghost");
+        gtk_widget_set_size_request(b, 46, 32);
+        g_object_set_data_full(G_OBJECT(b), "arah", g_strdup(p.arah), g_free);
+        gtk_grid_attach(GTK_GRID(grid), b, p.cx, p.cy, 1, 1);
+    }
+    gtk_widget_set_halign(grid, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(kiri), grid, FALSE, FALSE, 2);
+
+    // Warp: nama dunia di ketik, Enter / tombol = kirim ke bot terpilih.
+    GtkWidget *bwarp = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    entry_warp_ = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry_warp_), "nama dunia");
+    g_signal_connect(entry_warp_, "activate", G_CALLBACK(on_warp), this);
+    gtk_box_pack_start(GTK_BOX(bwarp), entry_warp_, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(bwarp), toolbtn("Warp", G_CALLBACK(on_warp), "ghost"),
+                       FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(kiri), bwarp, FALSE, FALSE, 0);
+
+    // Respawn + ambil objek di badan. Respawn = `action|respawn`, paket yang
+    // sama dengan tombol respawn di klien asli.
+    GtkWidget *baksi = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    GtkWidget *b_resp = toolbtn("Respawn", G_CALLBACK(on_respawn), "ghost");
+    GtkWidget *b_coll = toolbtn("Collect", G_CALLBACK(on_collect), "ghost");
+    GtkWidget *b_prof = toolbtn("Profil", G_CALLBACK(on_profil), "ghost");
+    gtk_widget_set_hexpand(b_resp, TRUE);
+    gtk_widget_set_hexpand(b_coll, TRUE);
+    gtk_widget_set_hexpand(b_prof, TRUE);
+    gtk_box_pack_start(GTK_BOX(baksi), b_resp, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(baksi), b_coll, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(baksi), b_prof, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(kiri), baksi, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(kiri), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
                        FALSE, FALSE, 4);
@@ -455,35 +526,60 @@ GtkWidget *App::tab_bots() {
     gtk_box_pack_start(GTK_BOX(kiri), la, FALSE, FALSE, 0);
 
     GtkWidget *b_add = toolbtn("Tambah Bot", G_CALLBACK(on_add_bot), "ghost");
-    gtk_widget_set_hexpand(b_add, TRUE);
-    gtk_box_pack_start(GTK_BOX(kiri), b_add, FALSE, FALSE, 0);
     GtkWidget *b_del = toolbtn("Hapus Bot", G_CALLBACK(on_del_bot), "ghost");
-    gtk_widget_set_hexpand(b_del, TRUE);
-    gtk_box_pack_start(GTK_BOX(kiri), b_del, FALSE, FALSE, 0);
     GtkWidget *b_tok = toolbtn("Token dari HP", G_CALLBACK(on_token_hp), "ghost");
+    GtkWidget *grid_akun = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid_akun), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid_akun), 6);
+    gtk_grid_set_column_homogeneous(GTK_GRID(grid_akun), TRUE);
+    gtk_widget_set_hexpand(b_add, TRUE);
+    gtk_widget_set_hexpand(b_del, TRUE);
     gtk_widget_set_hexpand(b_tok, TRUE);
-    gtk_box_pack_start(GTK_BOX(kiri), b_tok, FALSE, FALSE, 0);
+    gtk_grid_attach(GTK_GRID(grid_akun), b_add, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_akun), b_del, 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid_akun), b_tok, 0, 1, 2, 1);
+    gtk_box_pack_start(GTK_BOX(kiri), grid_akun, FALSE, FALSE, 0);
 
-    GtkWidget *fill = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_set_vexpand(fill, TRUE);
-    gtk_box_pack_start(GTK_BOX(kiri), fill, TRUE, TRUE, 0);
-    gtk_paned_pack1(GTK_PANED(body), kiri, FALSE, FALSE);
+    // Panel kiri isinya banyak (AKSI/KONTROL/AKUN); tanpa scroll, tinggi
+    // natural-nya memaksa window lebih tinggi dari layar sehingga tombol
+    // paling bawah terpotong. ScrolledWindow = tinggi minimum kecil.
+    GtkWidget *kiri_sc = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(kiri_sc),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(kiri_sc), FALSE);
+    gtk_container_add(GTK_CONTAINER(kiri_sc), kiri);
+    gtk_paned_pack1(GTK_PANED(body), kiri_sc, FALSE, FALSE);
 
     // ---- tabel ----
     GtkWidget *kanan = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_margin_start(kanan, 4);
     gtk_paned_pack2(GTK_PANED(body), kanan, TRUE, FALSE);
 
-    store_bots_ = gtk_list_store_new(9, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+    // Kolom terakhir (9) = boolean centang, bukan teks.
+    store_bots_ = gtk_list_store_new(10, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-                                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+                                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                                     G_TYPE_BOOLEAN);
     view_bots_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store_bots_));
     gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(view_bots_), GTK_TREE_VIEW_GRID_LINES_NONE);
     const char *judul[] = {"BOT", "NAMA", "LEVEL", "PING", "STATUS", "PROXY",
                            "DUNIA", "POSISI", "GEMS"};
     const int lebar[] = {110, 130, 52, 58, 110, 170, 120, 70, 62};
+    // Kolom centang paling kiri: penanda bot mana yang ikut dikontrol.
+    {
+        GtkCellRenderer *r = gtk_cell_renderer_toggle_new();
+        g_signal_connect(r, "toggled", G_CALLBACK(on_toggle_bot), this);
+        GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
+            "PILIH", r, "active", 9, nullptr);
+        gtk_tree_view_column_set_min_width(c, 54);
+        gtk_tree_view_append_column(GTK_TREE_VIEW(view_bots_), c);
+    }
     for (int i = 0; i < 9; ++i) add_col(view_bots_, judul[i], i, lebar[i]);
-    g_signal_connect(view_bots_, "cursor-changed", G_CALLBACK(on_open_bot), this);
+    // Klik = pilih bot (bisa banyak). Dobel-klik / Enter = buka halaman detail.
+    // Dulu `cursor-changed` langsung membuka detail, jadi mustahil memilih
+    // beberapa bot sekaligus untuk dikontrol bersama.
+    g_signal_connect(view_bots_, "row-activated", G_CALLBACK(on_open_bot), this);
+    g_signal_connect(view_bots_, "cursor-changed", G_CALLBACK(on_bot_select), this);
 
     GtkWidget *scroll = gtk_scrolled_window_new(nullptr, nullptr);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
@@ -551,6 +647,8 @@ GtkWidget *App::detail_page() {
                              gtk_label_new("Chat"));
     gtk_notebook_append_page(GTK_NOTEBOOK(detail_notebook_), detail_inv(),
                              gtk_label_new("Inventaris"));
+    gtk_notebook_append_page(GTK_NOTEBOOK(detail_notebook_), detail_paket(),
+                             gtk_label_new("Paket"));
     gtk_notebook_append_page(GTK_NOTEBOOK(detail_notebook_), detail_info(),
                              gtk_label_new("Info"));
     return v;
@@ -755,9 +853,51 @@ GtkWidget *App::detail_info() {
     gtk_label_set_xalign(GTK_LABEL(detail_info_), 0.0);
     gtk_label_set_yalign(GTK_LABEL(detail_info_), 0.0);
     gtk_label_set_selectable(GTK_LABEL(detail_info_), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(detail_info_), TRUE);
     GtkStyleContext *c = gtk_widget_get_style_context(detail_info_);
     gtk_style_context_add_class(c, "mono");
-    gtk_box_pack_start(GTK_BOX(v), detail_info_, TRUE, TRUE, 0);
+    // Harus di dalam scrolled window: GtkNotebook memakai min-height
+    // TERBESAR dari semua halaman, dan label panjang tanpa scroll membuat
+    // window dipaksa lebih tinggi dari layar (isi bawah terpotong).
+    GtkWidget *sc = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sc),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(sc), detail_info_);
+    gtk_box_pack_start(GTK_BOX(v), sc, TRUE, TRUE, 0);
+    return v;
+}
+
+// ------------------------------------------------ detail: tab Paket ---
+// Jurnal paket masuk/keluar. Untuk debugging: drop item di badan bot lalu
+// lihat paket type 14 (ItemChangeObject) yang dikirim server.
+GtkWidget *App::detail_paket() {
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkStyleContext *pc = gtk_widget_get_style_context(v);
+    gtk_style_context_add_class(pc, "pane");
+
+    view_paket_ = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(view_paket_), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(view_paket_), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view_paket_), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view_paket_), 10);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view_paket_), 8);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view_paket_), TRUE);
+    GtkWidget *sc = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_container_add(GTK_CONTAINER(sc), view_paket_);
+    gtk_box_pack_start(GTK_BOX(v), sc, TRUE, TRUE, 0);
+
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_top(bar, 8);
+    gtk_widget_set_margin_start(bar, 10);
+    gtk_box_pack_start(GTK_BOX(bar),
+                       toolbtn("Segarkan", G_CALLBACK(on_refresh), "ghost"),
+                       FALSE, FALSE, 0);
+    GtkWidget *note = gtk_label_new(
+        "in = dari server, out = dari bot. type 14 = ItemChangeObject (item jatuh).");
+    GtkStyleContext *nc = gtk_widget_get_style_context(note);
+    gtk_style_context_add_class(nc, "dim");
+    gtk_box_pack_start(GTK_BOX(bar), note, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(v), bar, FALSE, FALSE, 0);
     return v;
 }
 
@@ -886,12 +1026,24 @@ GtkWidget *App::tab_database() {
     gtk_box_pack_start(GTK_BOX(bar), cari, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v), bar, FALSE, FALSE, 0);
 
-    store_items_ = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING,
-                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    // Kolom 0 = pixbuf sprite item, supaya daftar kelihatan seperti database
+    // deltaX (gambar + nama), bukan tabel teks kosong.
+    store_items_ = gtk_list_store_new(6, GDK_TYPE_PIXBUF, G_TYPE_STRING,
+                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+                                      G_TYPE_STRING);
     view_items_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store_items_));
+    gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(view_items_), GTK_TREE_VIEW_GRID_LINES_NONE);
+    {
+        GtkCellRenderer *r = gtk_cell_renderer_pixbuf_new();
+        g_object_set(r, "xpad", 6, "ypad", 3, nullptr);
+        GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
+            "", r, "pixbuf", 0, nullptr);
+        gtk_tree_view_column_set_min_width(c, 46);
+        gtk_tree_view_append_column(GTK_TREE_VIEW(view_items_), c);
+    }
     const char *judul[] = {"ID", "NAMA", "RARITY", "TIPE", "GROW"};
     const int lebar[] = {80, 300, 80, 80, 90};
-    for (int i = 0; i < 5; ++i) add_col(view_items_, judul[i], i, lebar[i]);
+    for (int i = 0; i < 5; ++i) add_col(view_items_, judul[i], i + 1, lebar[i]);
     GtkWidget *scroll = gtk_scrolled_window_new(nullptr, nullptr);
     gtk_container_add(GTK_CONTAINER(scroll), view_items_);
     gtk_box_pack_start(GTK_BOX(v), scroll, TRUE, TRUE, 12);
@@ -951,7 +1103,24 @@ void App::build_ui() {
     apply_css();
     window_ = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window_), "Lucifer Linux");
-    gtk_window_set_default_size(GTK_WINDOW(window_), 1180, 720);
+    // Ukuran awal = workarea monitor. `gtk_window_maximize` saja tidak cukup:
+    // di beberapa WM/Wayland window tetap dipetakan seukuran default_size
+    // (di layar 1366x768 tampak "cuma setengah layar").
+    {
+        int w = 1180, h = 720;
+        GdkDisplay *d = gdk_display_get_default();
+        GdkMonitor *mon = d ? gdk_display_get_primary_monitor(d) : nullptr;
+        if (!mon && d) mon = gdk_display_get_monitor(d, 0);
+        if (mon) {
+            GdkRectangle wa{};
+            gdk_monitor_get_workarea(mon, &wa);
+            // Headerbar + dekorasi WM tidak termasuk workarea, jadi kurangi
+            // sedikit supaya window tidak menjorok keluar layar.
+            if (wa.width > 200) w = wa.width - 8;
+            if (wa.height > 200) h = wa.height - 8;
+        }
+        gtk_window_set_default_size(GTK_WINDOW(window_), w, h);
+    }
     // Ikon dock/taskbar (WM_CLASS diset lewat g_set_prgname di main).
     {
         const char *home = g_getenv("HOME");
@@ -961,7 +1130,6 @@ void App::build_ui() {
         if (access(ic.c_str(), R_OK) == 0)
             gtk_window_set_icon_from_file(GTK_WINDOW(window_), ic.c_str(), nullptr);
     }
-    gtk_window_set_titlebar(GTK_WINDOW(window_), make_header());
     g_signal_connect(window_, "destroy", G_CALLBACK(on_destroy), this);
 
     notebook_ = gtk_notebook_new();
@@ -974,6 +1142,14 @@ void App::build_ui() {
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook_), tab_database(), gtk_label_new("Database"));
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook_), tab_settings(), gtk_label_new("Settings"));
     gtk_widget_show_all(window_);
+    // Layar penuh sejak awal: maximize (bukan fullscreen) supaya titlebar
+    // dan tombol window tetap ada. Di Wayland beberapa WM mengabaikan
+    // maximize sebelum window dipetakan, jadi diulang lewat idle.
+    gtk_window_maximize(GTK_WINDOW(window_));
+    g_idle_add([](gpointer w) -> gboolean {
+        gtk_window_maximize(GTK_WINDOW(w));
+        return G_SOURCE_REMOVE;
+    }, window_);
     gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook_), tab_awal_);
 }
 
@@ -1023,11 +1199,19 @@ static std::string tebak_repo() {
     if (n <= 0) return ".";
     exe[n] = 0;
     std::string dir(exe);
-    for (int naik = 0; naik < 3; ++naik) {
+    // Cari ke atas sampai 6 tingkat: binary hasil `pasang-desktop.sh` ada di
+    // ~/.local/bin, jadi repo tidak akan ketemu kalau hanya naik 3 tingkat.
+    for (int naik = 0; naik < 6; ++naik) {
         size_t slash = dir.find_last_of('/');
         if (slash == std::string::npos) break;
         dir.erase(slash);
         if (access((dir + "/lucifer/__init__.py").c_str(), R_OK) == 0) return dir;
+    }
+    // Fallback: lokasi lazim repo, supaya backend tetap menemukan data/.
+    const char *home = g_getenv("HOME");
+    if (home) {
+        std::string c = std::string(home) + "/Documents/lucifer-linux";
+        if (access((c + "/lucifer/__init__.py").c_str(), R_OK) == 0) return c;
     }
     return ".";
 }

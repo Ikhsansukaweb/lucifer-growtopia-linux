@@ -29,13 +29,19 @@ from .account import (Account, RedirectInfo, detik_tunggu,
 from .enet import ENetHost
 from .items import ItemDatabase
 from .protocol import NetGamePacket as G, NetMessage as M, Tank
-from .world import Tile, World, parse_world
+from .world import DroppedItem, Tile, World, parse_world
 
 log = logging.getLogger("lucifer.bot")
 
-# ID item penting
-ITEM_WRENCH = 18
-ITEM_FIST = 0
+# Nama paket untuk jurnal debug (mengikuti NetGamePacket).
+_TANK_NAMA = {int(v): v.name for v in G}
+
+
+# ID item penting (dibuktikan dari data/items.dat v27: 18=Fist, 32=Wrench,
+# 0=Blank). Nilai lama 18/0 salah label -> punch mengirim Wrench dan wrench
+# mengirim Fist, jadi server tak pernah memecah blok.
+ITEM_FIST = 18
+ITEM_WRENCH = 32
 
 
 @dataclass
@@ -60,7 +66,7 @@ class PesanServer:
 _PesanServer = PesanServer  # nama internal pendek
 
 
-TILE_ACTIVATE_WRENCH = ITEM_WRENCH
+TILE_ACTIVATE_WRENCH = ITEM_WRENCH  # type 3 `value`, bukan type 7
 
 
 class BotStatus:
@@ -173,6 +179,20 @@ class Inventory:
     def getItemCount(self, item_id) -> int:
         it = self.getItem(item_id)
         return it.count if it else 0
+
+    def tambah(self, item_id: int, jumlah: int = 1) -> None:
+        """Naikkan jumlah item di inventaris lokal.
+
+        Dipakai saat server mengirim `ItemChangeObject` dengan netid bot
+        sendiri: server TIDAK mengirim ulang `SendInventoryState`, jadi tanpa
+        ini inventaris di GUI membeku di kondisi saat join.
+        """
+        it = self.items.get(int(item_id))
+        if it is None:
+            self.items[int(item_id)] = InventoryItem(int(item_id), int(jumlah), False)
+            self.itemcount = len(self.items)
+        else:
+            it.count += int(jumlah)
 
     # alias sesuai docs Lucifer
     findItem = getItemCount
@@ -303,6 +323,8 @@ class Bot:
         self.status = BotStatus.offline
         self.items_db = items_db
         self.proxy = proxy or self.account.proxy
+        # Relay UDP lokal bila bot memakai proxy (lihat `connect`).
+        self._relay = None
         self.on_event = on_event
 
         self.host: Optional[ENetHost] = None
@@ -317,6 +339,8 @@ class Bot:
         self._last_spawn_netid: int = 0
         self.gem_count = 0
         self.level = 0
+        # Level hanya dikirim server di dialog profil; minta sekali per sesi.
+        self._profil_diminta = False
         self.playtime = 0
         self.captcha_status = "no_captcha"
         self.captcha_url = ""
@@ -330,6 +354,11 @@ class Bot:
         # memakai pola ini untuk mengganti isi dialog sebelum dikirim).
         self._dalam_hook = False
         self._draw_ts = 0.0
+        self._sapu_ts = 0.0
+        # Batas percobaan collect per uid: sebagian objek memang tidak pernah
+        # dibalas server. Tanpa ini sapuan berkala mengirim type 11 selamanya.
+        self._ambil_n: dict[int, int] = {}
+        self._ambil_ts: dict[int, float] = {}
 
         # perilaku otomatis (dipakai skrip)
         self.auto_reconnect = True
@@ -343,7 +372,11 @@ class Bot:
         self.reconnect_backoff_max = 60.0
         self._reconnect_count = 0
         self.auto_accept = False
+        # MATI secara default: kalau nyala, bot menyapu semua objek dalam
+        # radius 3 tile tanpa diminta. Saat mati bot tetap mengambil objek
+        # yang menempel di badannya (tile yang sama) — lihat `_boleh_ambil`.
         self.auto_collect = False
+        self.auto_collect_radius = 3
         self.auto_leave_on_admin = False
         self.auto_leave_on_mod = False
         self.auto_tutorial = True
@@ -361,6 +394,9 @@ class Bot:
         self._last_server_msg = ""
         self._connected_at = 0.0
         self._action_log: collections.deque[str] = collections.deque(maxlen=200)
+        # Jurnal paket untuk debugging: setiap paket masuk/keluar dicatat
+        # (tipe, arah, ringkas isi). Ring buffer 500 baris terakhir.
+        self.packet_log: collections.deque[dict] = collections.deque(maxlen=500)
         # Data redirect terakhir (dari OnSendToServer). Selama ada, ServerHello
         # berikutnya dibalas dengan paket login SUB-SERVER, bukan ltoken.
         self.redirect_info = None
@@ -431,6 +467,38 @@ class Bot:
     # ------------------------------------------------------------------ #
     # Koneksi
     # ------------------------------------------------------------------ #
+    def _segarkan_token(self, timeout: int = 15) -> None:
+        """Tukar ltoken tersimpan dengan token game yang masih hangat.
+
+        `checktoken` adalah REFRESH endpoint: token yang dikembalikan berlaku
+        untuk SATU login game. Token tersimpan setelah dipakai login akan
+        ditolak server (`Login token is invalid`) walau masih bisa di-refresh.
+        Dibuktikan di log: token jam 18:35 -> login 18:42 sukses, lalu restart
+        18:54 dengan token yang sama -> ditolak.
+
+        Jadi setiap connect minta token baru dulu. Ini satu permintaan HTTP,
+        bukan reconnect — tidak menambah risiko blokir IP.
+        """
+        if self.redirect_info is not None:
+            return
+        ltoken = (getattr(self.account, "_token", "") or self.account.ltoken or "").strip()
+        if not ltoken or self.account.method in ("legacy", "growid"):
+            return
+        from .account import check_token  # noqa: PLC0415
+
+        try:
+            res = check_token(ltoken, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            self._emit("error", f"gagal segarkan token: {type(e).__name__}")
+            return
+        if res.ok and res.token:
+            if res.token != ltoken:
+                self.account.ltoken = res.token
+                self.account._token = res.token
+            self._emit("token_segar", res.message)
+        else:
+            self._emit("error", f"token ditolak checktoken: {res.message}")
+
     def connect(self, timeout_ms: int = 8000) -> bool:
         """Connect ke server Growtopia dan mulai loop jaringan."""
         if self._running:
@@ -466,6 +534,7 @@ class Bot:
             return False
 
         # login (ambil ltoken kalau metode growid)
+        self._segarkan_token()
         res = self.account.login(meta=self.meta)
         if not res.ok:
             self.status = BotStatus.logon_fail
@@ -474,27 +543,54 @@ class Bot:
         self._emit("login", res)
 
         proxy = None
+        relay = None
         if self.proxy:
             from .proxy import parse as _parse_proxy  # noqa: PLC0415
+            from .udprelay import RelayError, RelayUdp  # noqa: PLC0415
             try:
                 _p = _parse_proxy(self.proxy)
-                proxy = _p.tuple4() if _p else None
             except ValueError as e:
+                _p = None
                 self._emit("error", f"proxy tidak valid ({e}) — connect tanpa proxy")
 
+            if _p is not None:
+                # `enet_host_use_proxy()` di enet.so RUSAK: ia kirim greeting
+                # SOCKS5 lalu langsung menutup soket. Jadi proxy ditangani
+                # sendiri lewat relay UDP lokal, dan ENet bicara ke loopback.
+                try:
+                    relay = RelayUdp(_p, (host, port)).start()
+                except RelayError as e:
+                    self.status = BotStatus.error_connecting
+                    self._emit("error", f"proxy gagal: {e}")
+                    return False
+
+        target_host, target_port = (host, port)
+        if relay is not None:
+            target_host, target_port = "127.0.0.1", relay.port
+            self._emit("info", f"proxy {self.proxy} aktif lewat relay "
+                               f"127.0.0.1:{relay.port}")
+
         self.status = BotStatus.connecting
-        self.host = ENetHost(proxy=proxy)
+        self._relay = relay
+        self.host = ENetHost()
         self.server = (host, port)
-        if not self.host.connect(host, port, timeout_ms):
-            self.status = BotStatus.error_connecting
-            # ENet connect gagal bisa berarti: (a) Growtopia maintenance —
-            # sudah diperiksa di atas, atau (b) jaringan/firewall/IP bermasalah.
+        if not self.host.connect(target_host, target_port, timeout_ms):
+            self.status = BotStatus.maintenance
+            # Server Growtopia TIDAK membalas sama sekali. Ini bukan soal
+            # koneksi internet pengguna: UDP keluar sudah terbukti jalan
+            # (DNS/NTP/STUN membalas), dan host game diam di semua port
+            # 17000-17200. Penyebab paling umum: Growtopia maintenance.
+            # Jangan menyuruh user "cek internet" — itu tuduhan yang salah.
             self._emit(
                 "error",
-                f"ENet connect gagal ke {host}:{port} — cek koneksi internet, "
-                f"firewall, atau VPN/proxy. Kalau internet normal, server "
-                f"Growtopia mungkin sedang sibuk; coba lagi sebentar.",
+                f"Server Growtopia tidak menjawab ({host}:{port}). "
+                f"Kemungkinan besar Growtopia sedang maintenance — "
+                f"bukan masalah koneksi/WiFi kamu. Jangan connect berulang; "
+                f"tunggu sampai server pulih.",
             )
+            if relay is not None:
+                relay.close()
+                self._relay = None
             return False
 
         self._connected_at = time.time()
@@ -519,6 +615,13 @@ class Bot:
                 pass
         self._running = False
         self.status = BotStatus.offline
+        relay = getattr(self, "_relay", None)
+        if relay is not None:
+            try:
+                relay.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._relay = None
         # Data redirect hanya berlaku untuk satu sesi hospitalitas sub-server.
         # Menyimpannya melewati disconnect membuat connect berikutnya memakai
         # paket redirect basi (token mati) -> server diam.
@@ -599,6 +702,16 @@ class Bot:
                 self._draw_ts = now
                 self._emit("draw", delta)
 
+            # Sapu objek yang SUDAH ada sebelum bot masuk / yang terlewat.
+            # Item yang jatuh saat bot online sudah ditangani `_auto_ambil`
+            # lewat paket type 14, tapi item lama tidak pernah memicu paket.
+            if now - self._sapu_ts >= 2.0:
+                self._sapu_ts = now
+                try:
+                    self._sapu_objek()
+                except Exception:  # noqa: BLE001
+                    pass
+
             # balas ping berkala (jaga koneksi)
             if now - self._last_ping_ts > 5:
                 self._last_ping_ts = now
@@ -611,11 +724,72 @@ class Bot:
             except Exception:  # noqa: BLE001
                 pass
 
+    # -- jurnal paket (debug) ------------------------------------------- #
+    def catat_paket(self, arah: str, mtype: int, ringkas: Any) -> None:
+        """Simpan satu baris jurnal paket (`in`/`out`) untuk debugging."""
+        self.packet_log.append({
+            "ts": time.strftime("%H:%M:%S"),
+            "arah": arah,
+            "type": int(mtype),
+            "isi": str(ringkas)[:400],
+        })
+
+    @staticmethod
+    def _ringkas_tank(t: Tank) -> str:
+        """Ringkas TankPacket jadi satu baris yang enak dibaca."""
+        nama = _TANK_NAMA.get(int(t.type), str(int(t.type)))
+        bagian = [f"type={int(t.type)}({nama})"]
+        if t.net_id:
+            bagian.append(f"netid={t.net_id}")
+        if t.int_x or t.int_y:
+            bagian.append(f"tile=({t.int_x},{t.int_y})")
+        if t.vector_x or t.vector_y:
+            bagian.append(f"pos=({t.vector_x:.0f},{t.vector_y:.0f})")
+        if t.vector_x2 or t.vector_y2:
+            bagian.append(f"vec2=({t.vector_x2:.0f},{t.vector_y2:.0f})")
+        if t.value:
+            bagian.append(f"value={t.value}")
+        if t.object_type:
+            bagian.append(f"obj={t.object_type}")
+        if t.animation_type:
+            bagian.append(f"anim={t.animation_type}")
+        if t.jump_count:
+            bagian.append(f"jump={t.jump_count}")
+        if t.flags:
+            bagian.append(f"flags=0x{t.flags:x}")
+        return " ".join(bagian)
+
     # ------------------------------------------------------------------ #
     # Penanganan paket masuk
     # ------------------------------------------------------------------ #
     def _handle_packet(self, raw: bytes) -> None:
         mtype, payload = P.parse_packet(raw)
+
+        # Jurnal debug: catat semua paket masuk apa adanya.
+        if mtype == M.GamePacket and len(payload) >= P.TANK_SIZE:
+            try:
+                _tk, _ext = P.unpack_tank(payload)
+                _hex = _ext[:48].hex() if int(_tk.type) in (5, 6, 9, 13, 14) else ""
+                _var = ""
+                if int(_tk.type) == int(G.CallFunction):
+                    # Nama variant (OnSetPos/OnSpawn/...) jauh lebih berguna
+                    # daripada panjang ext mentah saat men-debug posisi.
+                    try:
+                        _vl = P.VariantList.deserialize(_ext)
+                        _arg = _vl.get(1)
+                        _var = f" fn={_vl.func_name()} arg1={str(_arg.as_string() if _arg else '')[:80]!r}"
+                    except Exception:  # noqa: BLE001
+                        _var = " fn=<gagal>"
+                self.catat_paket("in", mtype,
+                                 f"{self._ringkas_tank(_tk)} ext={len(_ext)} {_hex}{_var}")
+            except Exception:  # noqa: BLE001
+                self.catat_paket("in", mtype, f"tank rusak ({len(payload)} B)")
+        elif mtype in (M.GenericText, M.GameMessage):
+            _f = P.decode_text(payload)
+            _nama = _f.get("action") or _f.get("eventName") or ""
+            self.catat_paket("in", mtype, f"{_nama} | {str(_f)[:300]}")
+        else:
+            self.catat_paket("in", mtype, f"{len(payload)} B")
 
         if mtype == M.ServerHello:
             # Sub-server (setelah OnSendToServer) tidak menerima `ltoken`.
@@ -726,6 +900,7 @@ class Bot:
             self._dump("map", ext)
             self.world = parse_world(ext, self.items_db)
             self.players.clear()
+            self._profil_diminta = False
             self._emit("world_loaded", self.world)
         elif t == G.SendInventoryState:
             self._dump("inv", ext)
@@ -736,7 +911,9 @@ class Bot:
         elif t == G.PingRequest:
             self._reply_ping(tank)
         elif t == G.SendTileUpdateData:
-            self._apply_tile_update(ext)
+            self._apply_tile_update(tank, ext)
+        elif t == G.ItemChangeObject:
+            self._apply_item_change(tank, ext)
         elif t == G.State:
             self._apply_state(tank)
         elif t == G.SetCharacterState:
@@ -757,7 +934,19 @@ class Bot:
         fn = vl.func_name()
         self._emit("variant", (vl, tank.net_id))
         if fn == "OnDialogRequest":
-            self._emit("dialog", vl.get(2).as_string() if vl.get(2) else "")
+            teks = vl.get(2).as_string() if vl.get(2) else ""
+            # `add_player_info|<nama>|<level>|<xp>|<xp_next>|` hanya muncul di
+            # dialog hasil wrench diri sendiri. Ini satu-satunya sumber level
+            # yang dikirim server retail (bukan paket status).
+            self._baca_level_dialog(teks)
+            self._emit("dialog", teks)
+        elif fn == "OnSetBux":
+            # OnSetBux(<gems>, <animate>, <supporter>, [vec3 jam]) — argumen
+            # pertama = jumlah gem. Retail maupun server privat memakai ini.
+            self._set_gems(vl.get(1).as_int32() if vl.get(1) else 0)
+        elif fn in ("OnPlayerLeveledUp", "OnLevelUp"):
+            # Server privat (Gurotopia) mengirim level baru di sini.
+            self._set_level(vl.get(1).as_int32() if vl.get(1) else 0)
 
         if fn == "OnConsoleMessage":
             msg = P.remove_color(vl.get(1).as_string() if vl.get(1) else "")
@@ -951,13 +1140,20 @@ class Bot:
         )
         self.send_raw(reply)
 
-    def _apply_tile_update(self, ext: bytes) -> None:
-        """Terapkan pembaruan satu tile (SendTileUpdateData)."""
+    def _apply_tile_update(self, tank: Tank, ext: bytes) -> None:
+        """Terapkan pembaruan satu tile (SendTileUpdateData).
+
+        Koordinat tile ada di TANK (`int_x`/`int_y` = px/py), BUKAN di ext.
+        Ext hanya blok tergabung: u16 fg, u16 bg, u16 parent, u16 flags
+        (`block::to_blob` di Gurotopia). Parser lama membaca tx/ty dari ext
+        sehingga world tidak pernah berubah sesudah blok pecah, dan autofarm
+        memukul tile yang sama terus.
+        """
         try:
             if len(ext) < 8:
                 return
-            tx, ty = struct.unpack_from("<ii", ext, 0)
-            off = 8
+            tx, ty = int(tank.int_x), int(tank.int_y)
+            off = 0
             fg, bg, parent, flags = struct.unpack_from("<HHHH", ext, off)
             idx = self.world.index_of(tx, ty)
             old = self.world.tile(tx, ty)
@@ -968,6 +1164,135 @@ class Bot:
             self._emit("tile_update", t)
         except Exception as e:  # noqa: BLE001
             log.debug("tile update gagal: %s", e)
+
+    def _sapu_objek(self) -> None:
+        """Ambil objek dalam radius yang belum terambil.
+
+        Paket `type 14` hanya datang untuk item yang jatuh SESUDAH bot masuk.
+        Item yang sudah ada saat `SendMapData` tidak pernah memicu paket, jadi
+        tanpa sapuan ini bot hanya bisa collect satu-dua item lalu diam
+        (persis gejala yang dilaporkan).
+        """
+        if not self._running or not self.local:
+            return
+        for d in list(self.world.dropped):
+            if self._boleh_ambil(d.x, d.y):
+                self._auto_ambil(d.uid, d.x, d.y)
+
+    def _boleh_ambil(self, x: float, y: float) -> bool:
+        """Apakah objek ini boleh diambil otomatis?
+
+        `auto_collect` MATI = hanya objek yang menempel di badan bot, yaitu
+        tile tempat bot berdiri. Ini perilaku normal Growtopia: jalan menimpa
+        item = terambil. `auto_collect` NYALA = semua objek dalam
+        `auto_collect_radius` tile.
+        """
+        if not self.local:
+            return False
+        if self.auto_collect:
+            return self._in_range_px(x, y, self.auto_collect_radius)
+        return (int(x // 32) == self.local.tile_x
+                and int(y // 32) == self.local.tile_y)
+
+    def _auto_ambil(self, uid: int, x: float, y: float) -> None:
+        """Ambil otomatis satu objek yang jatuh di dekat bot.
+
+        Meniru `automation.lua` deltaX: server mengirim `ItemChangeObject`
+        (type 14, netid -1) saat item jatuh, lalu klien menunggu 30 ms dan
+        mengirim `ItemActivateObjectRequest` (type 11) untuk uid itu.
+
+        Percobaan dibatasi 3x per uid. Sebagian objek memang tidak bisa
+        diambil (mis. item 112 di dunia ini tidak pernah dibalas server);
+        tanpa batas, sapuan berkala mengirim type 11 selamanya untuk uid itu.
+        """
+        if not self._boleh_ambil(x, y):
+            return
+        uid_i = int(uid)
+        now = time.time()
+        if self._ambil_n.get(uid_i, 0) >= 3:
+            return
+        if now < self._ambil_ts.get(uid_i, 0.0):
+            return
+        self._ambil_n[uid_i] = self._ambil_n.get(uid_i, 0) + 1
+        self._ambil_ts[uid_i] = now + 2.0
+
+        def kerja() -> None:
+            time.sleep(0.03)   # deltaX: sleep(30)
+            if not self._running:
+                return
+            if not any(o.uid == uid_i for o in self.world.dropped):
+                return
+            self.collectObject(uid_i)
+
+        threading.Thread(target=kerja, name=f"autocollect-{uid_i}",
+                         daemon=True).start()
+
+    def _apply_item_change(self, tank: Tank, ext: bytes) -> None:
+        """ItemChangeObject (type 14): item muncul/hilang di dunia.
+
+        TERVERIFIKASI dari paket nyata (bukan tebakan):
+
+            netid = 0xFFFFFFFF (-1)  -> objek BARU muncul
+            netid = <netid pemain>   -> objek DIAMBIL pemain itu
+
+        Datanya ada di FIELD TANK, bukan extended (`ext=0` di semua paket):
+
+            value      = uid objek (bukan item id)
+            vector_x/y = posisi piksel
+
+        Contoh nyata:
+            type=14 netid=-1 pos=(1404,742) value=3    -> item jatuh
+            type=14 netid=6  value=11                  -> bot ambil (uid 11)
+
+        Tanpa handler ini `world.dropped` tidak pernah mengecil, jadi
+        autocollect mengirim ulang uid yang sudah tidak ada dan berhenti
+        setelah satu item.
+        """
+        try:
+            uid = int(tank.value)
+            if not uid:
+                return
+            if int(tank.net_id) in (-1, 0xFFFFFFFF):
+                x, y = float(tank.vector_x), float(tank.vector_y)
+                # PENTING: untuk item yang BARU JATUH, `value` = item_id,
+                # BUKAN uid objek. Bukti: drop Dirt (item_id 2) ->
+                # `type=14 netid=-1 pos=(1760,845) value=2`, sedangkan uid 2
+                # sudah dipakai objek lain di map.
+                #
+                # uid objek baru tidak dikirim server. Klien asli menomori
+                # sendiri dari penghitung `last_uid` yang diterima di
+                # SendMapData (lihat `World.last_uid`), dan itulah uid yang
+                # dipakai `ItemActivateObjectRequest`. Tanpa ini type 11
+                # selalu membawa uid salah dan hanya berhasil untuk objek
+                # yang uid-nya diketahui dari SendMapData (saat join).
+                # [Verifikasi: butuh 1x connect dengan server.]
+                self.world.last_uid = int(self.world.last_uid) + 1
+                uid = int(self.world.last_uid)
+                self.world.dropped.append(
+                    DroppedItem(item_id=int(tank.value), x=x, y=y,
+                                count=1, uid=uid))
+                self._emit("dropped", uid)
+                self.catat_paket("in", 14,
+                                 f"DROP uid={uid} item_id={int(tank.value)} "
+                                 f"pos=({x:.0f},{y:.0f}) "
+                                 f"radius={self.auto_collect_radius * 32}px "
+                                 f"auto={self.auto_collect}")
+                self._auto_ambil(uid, x, y)
+            else:
+                # netid = pemain yang mengambil. Kalau itu BOT SENDIRI, server
+                # tidak mengirim ulang inventaris (tidak ada type 9/13) — hanya
+                # pesan console. Jadi tambahkan sendiri dari data objek yang
+                # kita sudah tahu sebelumnya; bukan tebakan, server yang
+                # menyatakan objek ini berpindah ke kita.
+                diambil = next((o for o in self.world.dropped if o.uid == uid), None)
+                self.world.dropped = [o for o in self.world.dropped if o.uid != uid]
+                self._emit("picked", uid)
+                if diambil is not None and (self.local is None
+                                            or int(tank.net_id) == self.local.netid):
+                    self.inventory.tambah(diambil.item_id, max(1, diambil.count))
+                    self._emit("inventory", self.inventory)
+        except Exception as e:  # noqa: BLE001
+            log.debug("item change gagal: %s", e)
 
     def _apply_state(self, tank: Tank) -> None:
         """Posisi pemain dari paket `State` (type 0).
@@ -1023,25 +1348,102 @@ class Bot:
                 self.local = pl
             self.players[netid] = pl
             self._emit("character_state", pl)
+            if (not self._profil_diminta and self.world.tiles
+                    and netid == self.local.netid):
+                self._profil_diminta = True
+                self.minta_profil()
         except Exception as e:  # noqa: BLE001
             log.debug("character state gagal: %s", e)
 
     def _apply_status(self, ext: bytes) -> None:
-        """UpdateStatus: baca level/gems dari payload teks di dalamnya."""
+        """UpdateStatus (type 2): status pemain, BUKAN sumber level/gems.
+
+        Server retail tidak mengirim `level|`/`gems|` di sini. Gem datang
+        lewat variant `OnSetBux`, level lewat dialog profil (`add_player_info`).
+        Teks di-parse kalau kebetulan ada (server privat), tapi jangan
+        diandalkan.
+        """
+        if not ext:
+            return
         try:
             text = ext.decode("utf-8", "replace")
-            for line in text.split("\n"):
-                if "|" not in line:
-                    continue
-                k, v = line.split("|", 1)
-                k = k.strip().lower()
-                if k == "level":
-                    self.level = int(v.strip() or 0)
-                elif k in ("gems", "gem_count"):
-                    self.gem_count = int(v.strip() or 0)
-            self._emit("status_update", {"level": self.level, "gems": self.gem_count})
         except Exception:  # noqa: BLE001
-            pass
+            return
+        for line in text.split("\n"):
+            if "|" not in line:
+                continue
+            k, v = line.split("|", 1)
+            k = k.strip().lower()
+            if k == "level":
+                self._set_level(v.strip())
+            elif k in ("gems", "gem_count"):
+                self._set_gems(v.strip())
+
+    def _set_gems(self, nilai: Any) -> None:
+        try:
+            n = int(float(nilai))
+        except (TypeError, ValueError):
+            return
+        if n < 0:
+            return
+        self.gem_count = n
+        self._emit("status_update", {"level": self.level, "gems": self.gem_count})
+
+    def _set_level(self, nilai: Any) -> None:
+        try:
+            n = int(float(nilai))
+        except (TypeError, ValueError):
+            return
+        if n <= 0:
+            return
+        self.level = n
+        self._emit("status_update", {"level": self.level, "gems": self.gem_count})
+
+    def _baca_level_dialog(self, teks: str) -> bool:
+        """Ambil level dari dialog profil (`add_player_info`).
+
+        Format baris: `add_player_info|<nama>|<level>|<xp>|<xp_next>|`
+        Hanya dipakai kalau nilainya masuk akal (1..125), supaya dialog toko
+        atau world lock tidak salah tafsir.
+        """
+        hasil = False
+        for baris in teks.split("\n"):
+            if baris.startswith("add_player_info|"):
+                kolom = baris.split("|")
+                if len(kolom) >= 3:
+                    hasil = self._coba_level(kolom[2]) or hasil
+            # Gaya GrowServer: `add_smalltext|Level: 5 (10/100)|`
+            elif baris.startswith("add_smalltext|Level:"):
+                potong = baris.split("Level:", 1)[1].strip()
+                hasil = self._coba_level(potong.split()[0] if potong else "") or hasil
+            elif baris.startswith("add_smalltext|Gems:"):
+                potong = baris.split("Gems:", 1)[1].strip()
+                if potong:
+                    self._set_gems(potong.split()[0])
+        return hasil
+
+    def _coba_level(self, nilai: Any) -> bool:
+        """Terapkan level hanya kalau masuk akal (1..125)."""
+        try:
+            lvl = int(float(str(nilai).strip()))
+        except (TypeError, ValueError):
+            return False
+        if not 1 <= lvl <= 125:
+            return False
+        self._set_level(lvl)
+        return True
+
+    def minta_profil(self) -> bool:
+        """Minta dialog profil diri sendiri = satu-satunya sumber level retail.
+
+        Format teks klien asli (`action|wrench\n|netid|<id>`): setelah server
+        mengganti `\n` jadi `|`, `pipes[3]` harus `netid` dan `pipes[4]` = netid
+        (lihat `action/wrench.cpp` di Gurotopia). Dialog balasannya memuat
+        `add_player_info|<nama>|<level>|<xp>|<xp_next>|`.
+        """
+        if not self.local:
+            return False
+        return self.wrenchPlayer(self.local.netid)
 
     def _save_items(self, ext: bytes) -> None:
         """Terima items.dat dari server (dikompres zlib)."""
@@ -1070,6 +1472,17 @@ class Bot:
     def send_text(self, mtype: int, body: bytes) -> bool:
         if not self.host:
             return False
+        # Jurnal debug: catat paket keluar.
+        try:
+            _teks = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+            if int(mtype) == M.GamePacket and len(body) >= P.TANK_SIZE:
+                _tk, _ext = P.unpack_tank(body)
+                self.catat_paket("out", mtype, f"{self._ringkas_tank(_tk)} ext={len(_ext)}")
+            else:
+                _baris = [b for b in _teks.split("\n") if "|" in b]
+                self.catat_paket("out", mtype, " ".join(_baris)[:300])
+        except Exception:  # noqa: BLE001
+            pass
         # Hook `onsendpacket` (deltaX). Mengembalikan True = paket dibatalkan
         # dan handler sudah mengirim penggantinya sendiri.
         if not self._dalam_hook and self.on_event:
@@ -1264,31 +1677,62 @@ class Bot:
     fastDrop = drop
     fastTrash = trash
 
-    def place(self, x: int, y: int, item: int) -> bool:
-        """Pasang blok di posisi tile."""
-        self._emit("place", (x, y, item))
+    def _tile_change(self, x: int, y: int, value: int) -> bool:
+        """Kirim `tileChange` = Tank type 3 (TileChangeRequest).
+
+        Sumber: `lucifer/lua_deltax/library.lua:growtopia.tileChange`.
+
+            x  = posisi PIKSEl asal pukulan
+            px = tile x   -> int_x
+            py = tile y   -> int_y
+            value         -> int_data (18 = Fist = pukul, item id = taruh)
+
+        `x/y` (vector_x/vector_y) wajib: server memakainya untuk cek jangkauan
+        dan menolak paket tanpa posisi. Tile kosong atau bibit memakai posisi
+        tile (seperti library deltaX), selain itu posisi pemain.
+        """
+        px, py = float(x * 32), float(y * 32)
+        t = self.world.tile(int(x), int(y))
+        if t is None or t.fg == 0 or t.fg % 2 == 1 or not self.local:
+            ox, oy = px, py
+        else:
+            ox, oy = self.local.posx, self.local.posy
         return self.send_raw(
-            Tank(type=G.TileChangeRequest, int_x=int(x), int_y=int(y), value=int(item))
+            Tank(
+                type=G.TileChangeRequest,
+                int_x=int(x), int_y=int(y),
+                value=int(value),
+                vector_x=ox, vector_y=oy,
+            )
         )
+
+    def place(self, x: int, y: int, item: int) -> bool:
+        """Pasang blok/bibit di tile (value = item id)."""
+        self._emit("place", (x, y, item))
+        return self._tile_change(x, y, int(item))
 
     def hit(self, x: int, y: int) -> bool:
-        """Pukul tile."""
+        """Pukul tile. Bukan type 7 (itu pintu/wrench), tapi type 3 value Fist."""
         self._emit("hit", (x, y))
-        return self.send_raw(Tank(type=G.TileActivateRequest, int_x=int(x), int_y=int(y), value=0))
+        return self._tile_change(x, y, ITEM_FIST)
 
     def wrench(self, x: int, y: int) -> bool:
-        """Wrench tile."""
+        """Wrench tile: type 3 value 32 (Wrench), sama seperti klien asli."""
         self._emit("wrench", (x, y))
-        return self.send_raw(
-            Tank(type=G.TileActivateRequest, int_x=int(x), int_y=int(y), value=TILE_ACTIVATE_WRENCH)
-        )
+        return self._tile_change(x, y, TILE_ACTIVATE_WRENCH)
 
     def wrenchPlayer(self, netid: int) -> bool:
-        """Wrench pemain (buka profil)."""
-        pl = self.players.get(int(netid))
-        if not pl:
-            return False
-        return self.wrench(pl.tile_x, pl.tile_y)
+        """Wrench pemain (buka profil) = paket TEKS `action|wrench`.
+
+        Klien asli mengirim `action|wrench\n|netid|<id>`; server menormalkan
+        `\n` → `|` sehingga `pipes[3] == "netid"`, `pipes[4] == id`
+        (`include/action/wrench.cpp`, Gurotopia).
+        """
+        self._emit("wrench_player", int(netid))
+        return self.send_text(
+            M.GenericText,
+            f"action|wrench\n|netid|{int(netid)}\n".encode(),
+        )
 
     def active(self, x: int, y: int) -> bool:
         """Aktifkan tile (tombol/pintu/objek)."""
@@ -1296,17 +1740,45 @@ class Bot:
         return self.send_raw(Tank(type=G.TileActivateRequest, int_x=int(x), int_y=int(y), value=0))
 
     def collectObject(self, oid: int, range_: int = 3) -> bool:
-        """Ambil objek jatuh berdasarkan object id."""
+        """Ambil objek jatuh lewat `ItemActivateObjectRequest` (type 11).
+
+        Sumber: `decrypted_lua/automation.lua` deltaX (`takeObject`):
+
+            pkt.type  = 11
+            pkt.x     = object.pos.x      -- PIKSEl, bukan tile
+            pkt.y     = object.pos.y
+            pkt.px    = object.invbit
+            pkt.value = object.id         -- uid objek, bukan item id
+
+        Pemetaan ke TankPacket: `x/y` -> vector_x/vector_y, `px` -> int_x,
+        `value` -> value. `action|collect` TIDAK dipakai server — paket inilah
+        yang benar.
+        """
         self._emit("collect", oid)
-        return self.send_text(M.GenericText, f"action|collect\n|objectID|{int(oid)}\n".encode())
+        d = next((o for o in self.world.dropped if o.uid == int(oid)), None)
+        if d is None:
+            return False
+        return self.send_raw(
+            Tank(
+                type=G.ItemActivateObjectRequest,
+                value=int(d.uid),
+                vector_x=float(d.x),
+                vector_y=float(d.y),
+                int_x=int(d.count),
+            )
+        )
 
     def collect(self, range_: int = 3, interval: int = 0) -> int:
-        """Ambil semua objek dalam jarak tertentu. Return jumlah yang diambil."""
+        """Ambil objek jatuh dalam jarak tertentu. Return jumlah yang diambil.
+
+        `range_` dihitung dalam tile; objek yang lebih jauh tetap didekati
+        supaya server mengizinkan pengambilan.
+        """
         n = 0
         for d in list(self.world.dropped):
             if self._in_range_px(d.x, d.y, range_):
-                self.collectObject(d.uid)
-                n += 1
+                if self.collectObject(d.uid):
+                    n += 1
                 if interval:
                     time.sleep(interval / 1000.0)
         return n
@@ -1341,16 +1813,31 @@ class Bot:
             return True
         sx = (dx > 0) - (dx < 0)
         sy = (dy > 0) - (dy < 0)
+        kecepatan = 123.0  # px/detik; di atas ~300 server menolak (speedhack)
         ok = True
         for _ in range(langkah):
             ok = self._send_move(
                 self.local.posx + sx * 32.0, self.local.posy + sy * 32.0,
-                jeda=0.04,
+                kecepatan_x=sx * kecepatan, kecepatan_y=sy * kecepatan,
+                jeda=32.0 / kecepatan,
             ) and ok
         return ok
 
     def moveTile(self, x: int, y: int) -> bool:
-        return self._send_move(x * 32.0, y * 32.0)
+        """Pindah ke tile absolut (x,y) dengan kecepatan wajar.
+
+        Tanpa kecepatan di `vector_x2/vector_y2` server menolak paket sebagai
+        speedhack walau jaraknya cuma satu tile.
+        """
+        tx, ty = float(x * 32.0), float(y * 32.0)
+        vx = vy = 0.0
+        if self.local:
+            dx = tx - self.local.posx
+            dy = ty - self.local.posy
+            if dx or dy:
+                jarak = (dx * dx + dy * dy) ** 0.5
+                vx, vy = dx / jarak * 123.0, dy / jarak * 123.0
+        return self._send_move(tx, ty, kecepatan_x=vx, kecepatan_y=vy, jeda=0.26)
 
     def moveLeft(self, range_: int = 1) -> bool:
         return self.moveTo(-abs(int(range_)), 0)
@@ -1364,7 +1851,10 @@ class Bot:
     def moveDown(self, range_: int = 1) -> bool:
         return self.moveTo(0, abs(int(range_)))
 
-    def _send_move(self, x: float, y: float, jeda: float = 0.0) -> bool:
+    def _send_move(
+        self, x: float, y: float, jeda: float = 0.0,
+        kecepatan_x: float = 0.0, kecepatan_y: float = 0.0,
+    ) -> bool:
         """Kirim State; posisi lokal diperbarui sendiri (prediksi).
 
         Server Growtopia TIDAK mengecho `State`/`SetCharacterState` balik ke
@@ -1375,14 +1865,26 @@ class Bot:
         posisi diperbaiki dari data server.
         """
         self._emit("move", (round(x, 1), round(y, 1)))
+        # Pola diambil dari paket `State` pemain NYATA di server ini
+        # (diverifikasi dari jurnal paket, bukan tebakan):
+        #
+        #   type=0 netid=12 tile=(-1,-1) pos=(1717,834) vec2=(121,0)  flags=0x20
+        #   type=0 netid=12 tile=(-1,-1) pos=1719,834  vec2=(-84,0)  flags=0x30
+        #
+        # int_x/int_y = -1 (bukan nomor tile!), flags 0x20 = hadap kanan,
+        # 0x10 ditambahkan saat hadap kiri (0x30). Mengisi int_x dengan
+        # x//32 membuat server mengabaikan paket.
+        arah_kiri = kecepatan_x < 0
         tank = Tank(
             type=G.State,
             vector_x=float(x),
             vector_y=float(y),
-            vector_x2=float(x),
-            vector_y2=float(y),
-            int_x=int(x) // 32,
-            int_y=int(y) // 32,
+            # vector_x2/vector_y2 = KECEPATAN (px/detik), bukan posisi.
+            vector_x2=float(kecepatan_x),
+            vector_y2=float(kecepatan_y),
+            int_x=-1,
+            int_y=-1,
+            flags=0x30 if arah_kiri else 0x20,
         )
         # net_id sengaja 0: deltaX (`library.lua:tileChange`) juga tidak pernah
         # mengisi netid — server mengenali pengirim dari koneksi, dan menebak

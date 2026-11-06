@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from .proxy import Proxy, parse, uji
+from .proxy import Proxy, parse, uji, uji_enet, uji_udp
 
 __all__ = ["ProxyPool"]
 
@@ -109,9 +109,24 @@ class ProxyPool:
         return {"ok": True, "dihapus": n, "total": len(self._isi)}
 
     def cek(self, batas: int = 0, timeout: float = 6.0) -> dict[str, Any]:
-        """Uji proxy (paralel ringan). `batas`>0 = hanya N teratas."""
+        """Uji proxy: UDP dulu, lalu ENet ke server Growtopia. `batas`>0 = N teratas.
+
+        Uji yang dipakai adalah ENet handshake ke SERVER GROWTOPIA sungguhan.
+        Proxy yang lolos TCP tapi menolak UDP tetap ditandai gagal — itu satu-
+        satunya uji yang berarti untuk game ini.
+        """
         with self._lock:
             target = list(self._isi[: batas or len(self._isi)])
+
+        server: Optional[tuple[str, int]] = None
+        alasan_server = ""
+        try:
+            from .account import fetch_server_data  # noqa: PLC0415
+
+            sd = fetch_server_data(225, "5.58", timeout=15)
+            server = (sd["server"], int(sd["port"]))
+        except Exception as e:  # noqa: BLE001
+            alasan_server = f"server Growtopia tak diketahui: {e}"
 
         hasil: dict[int, tuple[bool, str, int]] = {}
 
@@ -119,7 +134,21 @@ class ProxyPool:
             p = Proxy(str(e["host"]), int(e["port"]), str(e.get("user") or ""),
                       str(e.get("passwd") or ""))
             t0 = time.time()
-            ok, pesan = uji(p, timeout=timeout)
+            # Uji UDP dulu: murah (~1 dtk) dan langsung menyingkirkan proxy
+            # TCP-only seperti webshare "direct" yang selalu menolak
+            # UDP ASSOCIATE. Tanpa ini, uji ENet ke server yang sedang
+            # tak terjangkau menghasilkan "gagal" yang menyesatkan.
+            udp_ok, udp_pesan = uji_udp(p, timeout=timeout,
+                                        target=server if server else None)
+            if not udp_ok:
+                hasil[idx] = (False, f"tidak bisa UDP: {udp_pesan}", 
+                              int((time.time() - t0) * 1000))
+                return
+            if server is None:
+                hasil[idx] = (True, f"UDP ok — {alasan_server}",
+                              int((time.time() - t0) * 1000))
+                return
+            ok, pesan = uji_enet(p, server, timeout_ms=int(timeout * 1000))
             hasil[idx] = (ok, pesan, int((time.time() - t0) * 1000))
 
         utas = [threading.Thread(target=satu, args=(i, e), daemon=True)

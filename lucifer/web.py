@@ -568,7 +568,7 @@ async function muatFitur(){
     return;
   }
   const s = d.status;
-  const baris = [['autofarm','AutoFarm', s.autofarm.aktif, `${s.autofarm.siap_panen} siap panen · ${s.autofarm.kosong} kosong`],
+  const baris = [['autofarm','AutoFarm', s.autofarm.aktif, `${s.autofarm.siap_pecah} blok · ${s.autofarm.kosong} kosong`],
     ['autocollect','AutoCollect', s.autocollect.aktif, `${s.autocollect.objek_dunia} objek · ${s.autocollect.diambil} diambil`],
     ['spammer','Spammer', s.spammer.aktif, `${s.spammer.jumlah_teks} teks · ${s.spammer.terkirim} terkirim`],
     ['autodrop','AutoDrop', s.autodrop.aktif, `mode ${s.autodrop.mode} · min ${s.autodrop.minimum}`],
@@ -586,8 +586,8 @@ async function muatFitur(){
 async function fitur(feature, action){
   const body = {feature, action, label: (fiturTerakhir&&fiturTerakhir.label)||''};
   if(feature==='autofarm' && action==='start'){
-    const seed = prompt('ID bibit untuk ditanam (kosongkan = hanya panen):','');
-    if(seed) body.opts = {seed_id: parseInt(seed,10)||0};
+    const blok = prompt('ID blok untuk break & place (kosongkan = pecah semua):','');
+    if(blok) body.opts = {block_id: parseInt(blok,10)||0};
   }
   if(feature==='spammer' && action==='start'){
     const teks = prompt('Teks spam (pisahkan dengan | ):','halo');
@@ -752,6 +752,10 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "label": bot.label, "world": w.name,
                 "w": w.width, "h": w.height, "tiles": tiles,
                 "players": pemain, "dropped": len(w.dropped),
+                "objects": [{"uid": d.uid, "item_id": d.item_id,
+                             "x": round(d.x, 1), "y": round(d.y, 1),
+                             "count": d.count, "flags": d.flags}
+                            for d in w.dropped],
                 "seeds": len(w.find_seeds(False)),
                 "ready": len(w.find_seeds(True))}
 
@@ -779,7 +783,7 @@ class Handler(BaseHTTPRequestHandler):
             "fitur": fitur,
             "status_fitur": fb.status(),
             "autofarm": {
-                "seed_id": af.seed_id,
+                "block_id": af.block_id,
                 "target_tiles": [{"x": x, "y": y} for x, y in af.target_tiles],
                 "do_break": af.do_break,
                 "do_place": af.do_place,
@@ -823,6 +827,45 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False, default=str).encode())
 
+    def _push_ltoken(self, payload: dict) -> dict:
+        """Terima refreshToken dari HP, tukar jadi ltoken, simpan sebagai akun.
+
+        Body: {"refresh": "...", "tankid": "Nama", "rid": "..."}
+
+        Tanpa secret — endpoint ini TERBUKA. Siapa pun yang tahu URL bisa
+        menambah akun ke bot, jadi jangan bagikan URL tunnel-nya.
+        """
+        refresh = str(payload.get("refresh") or "").strip()
+        if not 40 < len(refresh) < 4000:
+            return {"ok": False, "error": "refreshToken tidak wajar"}
+
+        from .account import check_token, load_accounts, upsert_account  # noqa: PLC0415
+
+        res = check_token(refresh, timeout=20)
+        if not res.ok or not res.token:
+            return {"ok": False, "error": f"token ditolak: {res.message}"}
+
+        tankid = str(payload.get("tankid") or "").strip()
+        akun_lama = load_accounts(self.runner.accounts_path)
+        # Jangan bikin akun kembar: kalau tankid-nya sudah pernah masuk, pakai
+        # label lamanya. Tanpa ini setiap kirim bikin entri baru "hp".
+        cocok = next((a for a in akun_lama
+                      if tankid and tankid in (a.username, a.label)), None)
+        label = (cocok.label if cocok
+                 else tankid or str(payload.get("label") or "").strip() or "hp")
+        hasil = self.runner.tambah_akun(
+            label=label, username=tankid or label, ltoken=res.token,
+            method="hp/save.dat", connect=False,
+        )
+        if hasil.get("ok") and payload.get("rid"):
+            akun = next((a for a in load_accounts(self.runner.accounts_path)
+                         if a.label == label), None)
+            if akun is not None:
+                akun.rid = str(payload.get("rid"))
+                upsert_account(self.runner.accounts_path, akun)
+        hasil["tankid"] = tankid
+        return hasil
+
     def _terapkan_fitur(self, payload: dict) -> dict:
         """Nyalakan/matikan satu fitur otomasi dari dashboard.
 
@@ -842,11 +885,18 @@ class Handler(BaseHTTPRequestHandler):
         peta = {
             "autofarm": fb.autofarm,
             "autocollect": fb.autocollect,
+            "automation": fb.automation,
+            "autowrench": fb.autowrench,
+            "modexit": fb.modexit,
             "spammer": fb.spammer,
             "autodrop": fb.autodrop,
             "path": fb.path,
             "pathfinder": fb.path,
             "replay": fb.replay,
+            "fishing": fb.fishing,
+            "autocrime": fb.autocrime,
+            "ghost": fb.ghost,
+            "copysong": fb.copysong,
         }
         if nama == "stop_all":
             fb.stop_semua()
@@ -902,6 +952,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._set_parameter(obj, opts)
 
+        # Tombol aksi (tipe "tombol") dari skema deltaX: posisi sekarang,
+        # nama dunia sekarang, tambah ke daftar, trigger, cari terdekat.
+        if aksi in ("pos", "world", "add", "trigger", "cari", "ambil_aksi",
+                    "mulai", "refresh"):
+            return self._aksi_tombol(nama, obj, aksi, opts, bot, fb)
+
         if nama == "replay":
             try:
                 if aksi == "stop":
@@ -947,6 +1003,88 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "error": str(e), "status": fb.status()}
         return {"ok": True, "label": bot.label, "status": fb.status()}
 
+    def _aksi_tombol(self, nama: str, obj, aksi: str, opts: dict,
+                     bot, fb) -> dict:
+        """Jalankan tombol bertipe `tombol` dari skema mod menu.
+
+        Semua aksi di sini hanya membaca keadaan bot atau memanggil metode
+        yang sudah ada (`drop`, `warp`, `tambah`). Tombol yang menandakan
+        fitur belum didukung menjawab apa adanya, bukan pura-pura jalan.
+        """
+        lokal = bot.local
+        tile = (lokal.tile_x, lokal.tile_y) if lokal else (0, 0)
+        dunia = bot.world.name if bot.world else ""
+
+        if aksi == "pos":
+            for kx, ky in (("drop_pos_x", "drop_pos_y"),
+                           ("donate_player_pos_x", "donate_player_pos_y"),
+                           ("donate_pos_x", "donate_pos_y")):
+                if hasattr(obj, kx):
+                    setattr(obj, kx, tile[0])
+                    setattr(obj, ky, tile[1])
+            for kx, ky in (("autodrop_x", "autodrop_y"), ("drop_x", "drop_y")):
+                if hasattr(obj, kx):
+                    setattr(obj, kx, tile[0])
+                    setattr(obj, ky, tile[1])
+            if hasattr(obj, "target_x"):
+                obj.target_x, obj.target_y = tile
+            return {"ok": True, "label": bot.label, "posisi": list(tile)}
+
+        if aksi == "world":
+            diisi = []
+            for kunci in ("drop_world", "donate_world", "pick_world",
+                          "drop_worldname", "filename"):
+                if hasattr(obj, kunci):
+                    setattr(obj, kunci, dunia)
+                    diisi.append(kunci)
+            return {"ok": True, "label": bot.label, "world": dunia,
+                    "diisi": diisi}
+
+        if aksi == "add":
+            teks = str(opts.get("texttospam") or opts.get("teks") or "").strip()
+            if nama == "spammer":
+                if not teks:
+                    return {"ok": False, "error": "text to spam kosong"}
+                return {"ok": True, "daftar": fb.spammer.tambah(teks)}
+            return {"ok": False, "error": f"'{nama}' belum mendukung Add"}
+
+        if aksi == "refresh":
+            if nama == "replay":
+                return {"ok": True, "berkas": fb.replay.daftar_berkas()}
+            return {"ok": True, "catatan": "tidak ada daftar berkas untuk fitur ini"}
+
+        if aksi == "ambil_aksi":
+            # "Get all actions": aksi yang terekam Replay (bukan state server).
+            return {"ok": True, "aksi": fb.replay.info().get("aksi", 0)}
+
+        if aksi == "trigger":
+            if nama == "modexit":
+                return {"ok": True, **fb.modexit.jalankan("tombol trigger")}
+            return {"ok": False, "error": f"'{nama}' tidak punya trigger"}
+
+        if aksi == "cari":
+            me = bot.local
+            if me is None:
+                return {"ok": False, "error": "posisi bot belum diketahui"}
+            lain = [p for p in bot.players.values() if p.netid != me.netid]
+            if not lain:
+                return {"ok": False, "error": "tidak ada pemain lain di dunia"}
+            dekat = min(lain, key=lambda p: (p.posx - me.posx) ** 2 +
+                                           (p.posy - me.posy) ** 2)
+            for kx, ky in (("donate_pos_x", "donate_pos_y"),
+                           ("donate_player_pos_x", "donate_player_pos_y")):
+                if hasattr(obj, kx):
+                    setattr(obj, kx, dekat.tile_x)
+                    setattr(obj, ky, dekat.tile_y)
+            return {"ok": True, "pemain": dekat.name or f"#{dekat.netid}",
+                    "posisi": [dekat.tile_x, dekat.tile_y]}
+
+        if aksi == "mulai":
+            return {"ok": False,
+                    "error": "Copy Song butuh data world lagu; belum didukung"}
+
+        return {"ok": False, "error": f"aksi '{aksi}' tidak dikenal"}
+
     def _set_parameter(self, obj, opts: dict) -> dict:
         """Terapkan parameter ke objek fitur, dengan konversi tipe aman.
 
@@ -965,6 +1103,17 @@ class Handler(BaseHTTPRequestHandler):
             if not hasattr(obj, kunci):
                 continue
             lama = getattr(obj, kunci)
+            # Kolom "item" tunggal yang di objek berupa daftar (mis.
+            # collectfilter_itemdisabletake): terima satu id, jadikan list.
+            if isinstance(lama, list) and kunci != "tiles" and kunci != "target_tiles":
+                try:
+                    satu = int(str(nilai).strip() or 0)
+                except (TypeError, ValueError):
+                    satu = 0
+                nilai = [satu] if satu else []
+                setattr(obj, kunci, nilai)
+                hasil[kunci] = nilai
+                continue
             try:
                 if isinstance(lama, bool):
                     nilai = bool(nilai)
@@ -1146,6 +1295,12 @@ class Handler(BaseHTTPRequestHandler):
                             "chat": bot.chat.terakhir(200)})
         elif path == "/api/logs":
             self._json({"logs": self.runner.logs() if self.runner else []})
+        elif path == "/api/packets":
+            # Jurnal paket masuk/keluar untuk debugging.
+            label = self._query().get("label", "")
+            bot = self._bot(label)
+            self._json({"ok": True,
+                        "packets": list(bot.packet_log) if bot else []})
         elif path == "/api/items":
             self._json(self._cari_item(self._query()))
         elif path == "/api/script":
@@ -1174,6 +1329,9 @@ class Handler(BaseHTTPRequestHandler):
                     isi = {}
                     for k in kat["kontrol"]:
                         kunci = k["kunci"]
+                        # Tombol tidak punya nilai; jangan kirim null.
+                        if k["tipe"] == "tombol":
+                            continue
                         if kunci == "teks" and hasattr(obj, "daftar"):
                             isi["teks"] = "\n".join(obj.daftar)
                             continue
@@ -1202,7 +1360,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         path = self.path.split("?")[0]
         if path not in ("/api/command", "/api/login", "/api/login/hp",
-                        "/api/account/delete", "/api/feature",
+                        "/api/push/ltoken", "/api/account/delete",
+                        "/api/feature",
                         "/api/script/save", "/api/script/delete",
                         "/api/bot/switch", "/api/proxy", "/api/proxies",
                         "/api/connect", "/api/disconnect"):
@@ -1263,6 +1422,12 @@ class Handler(BaseHTTPRequestHandler):
                     connect=bool(payload.get("connect", False)),
                 ))
 
+            elif path == "/api/push/ltoken":
+                # HP (app pemantau save.dat) mengirim refreshToken ke sini
+                # lewat Cloudflare Tunnel. Server yang menukarnya jadi ltoken,
+                # jadi HP tak pernah memegang rahasia jangka panjang.
+                self._json(self._push_ltoken(payload))
+
             elif path == "/api/account/delete":
                 self._json(self.runner.hapus_akun(str(payload.get("label") or "")))
 
@@ -1296,7 +1461,7 @@ class Handler(BaseHTTPRequestHandler):
                 # {label, proxy} -> set/hapus; {proxy} tanpa label -> uji saja
                 label = str(payload.get("label") or "").strip()
                 if not label:
-                    from .proxy import parse as _parse_proxy, uji as _uji  # noqa: PLC0415
+                    from .proxy import parse as _parse_proxy, uji_enet as _uji_enet  # noqa: PLC0415
                     try:
                         pxy = _parse_proxy(str(payload.get("proxy") or ""))
                     except ValueError as e:
@@ -1305,7 +1470,17 @@ class Handler(BaseHTTPRequestHandler):
                     if pxy is None:
                         self._json({"ok": False, "error": "isi proxy dulu"})
                         return
-                    ok, pesan = _uji(pxy)
+                    # Uji ke server Growtopia sungguhan: proxy yang hanya bisa
+                    # TCP akan lolos `uji()` tapi selalu gagal dipakai bot.
+                    try:
+                        from .account import fetch_server_data  # noqa: PLC0415
+                        sd = fetch_server_data(225, "5.58", timeout=15)
+                        target = (sd["server"], int(sd["port"]))
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False,
+                                    "error": f"server Growtopia tak diketahui: {e}"})
+                        return
+                    ok, pesan = _uji_enet(pxy, target)
                     self._json({"ok": ok, "pesan": pesan, "proxy": pxy.url(sandi=False)})
                     return
                 self._json(self.runner.atur_proxy(label, str(payload.get("proxy") or "")))

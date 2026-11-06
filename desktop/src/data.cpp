@@ -9,6 +9,7 @@
 
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
+#include <algorithm>
 #include <cctype>
 #include <map>
 
@@ -16,6 +17,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 
@@ -37,12 +40,13 @@ JsonNode *parse(const std::string &teks) {
 
 void kosongkan(GtkListStore *s) { gtk_list_store_clear(s); }
 
-void baris(GtkListStore *s, const std::vector<std::string> &v) {
+GtkTreeIter baris(GtkListStore *s, const std::vector<std::string> &v) {
     GtkTreeIter it;
     gtk_list_store_append(s, &it);
     for (size_t i = 0; i < v.size(); ++i) {
         gtk_list_store_set(s, &it, static_cast<int>(i), v[i].c_str(), -1);
     }
+    return it;
 }
 
 std::string pilih_teks(GtkWidget *view, int kolom) {
@@ -187,7 +191,7 @@ void App::refresh_bots() {
                 }
                 combo.push_back(label);
                 std::string pos = jstr(b, "world_size");
-                baris(store_bots_, {
+                GtkTreeIter it_bot = baris(store_bots_, {
                     label, nama,
                     jint(b, "level") ? std::to_string(jint(b, "level")) : "-",
                     jint(b, "ping") ? std::to_string(jint(b, "ping")) + " ms" : "-",
@@ -197,6 +201,8 @@ void App::refresh_bots() {
                     pos.empty() ? "—" : pos,
                     std::to_string(jint(b, "gems")),
                 });
+                gtk_list_store_set(store_bots_, &it_bot, 9,
+                                   dipilih_.count(label) ? TRUE : FALSE, -1);
             }
         }
     }
@@ -205,14 +211,27 @@ void App::refresh_bots() {
 
     // Tanpa ini tidak ada baris terpilih, jadi Hapus/Connect tidak tahu
     // bot mana yang dimaksud dan diam saja.
+    // Tabel di-rebuild tiap tick, jadi sorotan baris hilang. Pulihkan:
+    // pilih baris milik aktif_, kalau tidak ada pakai baris pertama.
     if (view_bots_ && !combo.empty()) {
         GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(view_bots_));
-        GtkTreeModel *model = nullptr;
         GtkTreeIter it;
-        if (!gtk_tree_selection_get_selected(sel, &model, &it)) {
-            GtkTreeIter first;
-            if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store_bots_), &first))
-                gtk_tree_selection_select_iter(sel, &first);
+        gboolean ketemu = FALSE;
+        for (gboolean ok = gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store_bots_), &it);
+             ok; ok = gtk_tree_model_iter_next(GTK_TREE_MODEL(store_bots_), &it)) {
+            gchar *l = nullptr;
+            gtk_tree_model_get(GTK_TREE_MODEL(store_bots_), &it, 0, &l, -1);
+            if (l && aktif_ == l) { ketemu = TRUE; g_free(l); break; }
+            g_free(l);
+        }
+        if (ketemu) {
+            gtk_tree_selection_select_iter(sel, &it);
+        } else {
+            GtkTreeModel *model = nullptr;
+            GtkTreeIter cur;
+            if (!gtk_tree_selection_get_selected(sel, &model, &cur) &&
+                gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store_bots_), &it))
+                gtk_tree_selection_select_iter(sel, &it);
         }
     }
 
@@ -445,6 +464,35 @@ void App::refresh_detail_map() {
     json_object_unref(o);
 }
 
+void App::refresh_detail_paket() {
+    if (aktif_.empty() || !view_paket_) return;
+    JsonObject *o = get_obj("/api/packets?label=" + aktif_);
+    if (!o) return;
+    JsonArray *arr = json_object_has_member(o, "packets")
+                         ? json_object_get_array_member(o, "packets") : nullptr;
+    guint n = arr ? json_array_get_length(arr) : 0;
+
+    std::string teks;
+    for (guint i = 0; i < n; ++i) {
+        JsonObject *p = jobj(json_array_get_element(arr, i));
+        if (!p) continue;
+        teks += jstr(p, "ts");
+        teks += "  ";
+        teks += jstr(p, "arah");
+        teks += "  ";
+        teks += jstr(p, "isi");
+        teks += "\n";
+    }
+    if (teks == paket_ttd_) { json_object_unref(o); return; }
+    paket_ttd_ = teks;
+    isi_textview(view_paket_, teks);
+    GtkTextIter end;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view_paket_));
+    gtk_text_buffer_get_end_iter(b, &end);
+    gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(view_paket_), &end, 0.0, FALSE, 0.0, 0.0);
+    json_object_unref(o);
+}
+
 void App::refresh_detail_inv() {
     if (aktif_.empty() || !inv_flow_) return;
     JsonObject *o = get_obj("/api/inventory?label=" + aktif_);
@@ -584,13 +632,26 @@ void App::refresh_items(const std::string &q) {
         for (guint i = 0; i < n; ++i) {
             JsonObject *it = jobj(json_array_get_element(arr, i));
             if (!it) continue;
-            baris(store_items_, {
-                std::to_string(jint(it, "id")),
-                jstr(it, "name"),
-                jstr(it, "rarity"),
-                jstr(it, "type"),
-                jint(it, "grow") ? std::to_string(jint(it, "grow")) + " dtk" : "—",
-            });
+            // Kolom 0 bertipe PIXBUF, jadi tidak bisa lewat baris() (yang
+            // menulis string ke semua kolom). Isi kolom teks mulai indeks 1.
+            GtkTreeIter irow;
+            gtk_list_store_append(store_items_, &irow);
+            std::string id_teks = std::to_string(jint(it, "id"));
+            std::string grow_teks =
+                jint(it, "grow") ? std::to_string(jint(it, "grow")) + " dtk" : "—";
+            gtk_list_store_set(store_items_, &irow,
+                               1, id_teks.c_str(),
+                               2, jstr(it, "name").c_str(),
+                               3, jstr(it, "rarity").c_str(),
+                               4, jstr(it, "type").c_str(),
+                               5, grow_teks.c_str(), -1);
+            if (GdkPixbuf *pb = sprite(static_cast<int>(jint(it, "id")))) {
+                GdkPixbuf *kcl = gdk_pixbuf_scale_simple(pb, 24, 24, GDK_INTERP_BILINEAR);
+                if (kcl) {
+                    gtk_list_store_set(store_items_, &irow, 0, kcl, -1);
+                    g_object_unref(kcl);
+                }
+            }
         }
         if (items_note_) {
             char buf[96];
@@ -610,6 +671,38 @@ void App::refresh_items(const std::string &q) {
 std::string App::selected_bot() {
     std::string l = pilih_teks(view_bots_, 0);
     return l.empty() ? aktif_ : l;
+}
+
+// Semua bot yang dicentang di tabel. Dipakai kontrol KONTROL + warp:
+// kalau Multi-Select aktif, aksi berlaku untuk seluruh baris terpilih.
+std::vector<std::string> App::selected_bots() {
+    std::vector<std::string> out;
+    // Sumber kebenaran = kolom centang, bukan GtkTreeSelection: baris bisa
+    // saja tidak ter-highlight tapi tetap ingin ikut dikontrol.
+    if (dipilih_.empty()) {
+        std::string satu = selected_bot();
+        if (!satu.empty()) out.push_back(satu);
+        return out;
+    }
+    for (auto &l : dipilih_) out.push_back(l);
+    return out;
+}
+
+// Satu klik centang = masukkan/keluarkan bot dari daftar yang dikontrol.
+void App::on_toggle_bot(GtkCellRendererToggle *, gchar *path, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    GtkTreeIter it;
+    if (!gtk_tree_model_get_iter_from_string(GTK_TREE_MODEL(a->store_bots_), &it, path))
+        return;
+    gchar *label = nullptr;
+    gboolean aktif = FALSE;
+    gtk_tree_model_get(GTK_TREE_MODEL(a->store_bots_), &it, 0, &label, 9, &aktif, -1);
+    if (label) {
+        if (aktif) a->dipilih_.erase(label);
+        else       a->dipilih_.insert(label);
+        g_free(label);
+    }
+    gtk_list_store_set(a->store_bots_, &it, 9, !aktif, -1);
 }
 std::string App::selected_script() { return pilih_teks(view_scripts_, 0); }
 std::string App::proxy_host_port() {
@@ -632,6 +725,10 @@ void App::append_console(const std::string &teks) {
 // ----------------------------------------------------------- callback ---
 void App::on_refresh(GtkButton *, gpointer self) {
     auto *a = static_cast<App *>(self);
+    // Buang cache sprite: item bisa dimuat ulang di backend (items.dat baru),
+    // sprite lama akan basi.
+    for (auto &kv : a->sprite_cache_) g_object_unref(kv.second);
+    a->sprite_cache_.clear();
     a->refresh();
     a->refresh_items("");
 }
@@ -642,8 +739,18 @@ void App::on_clear_log(GtkButton *, gpointer self) {
     a->last_log_.clear();
 }
 
-// Pilih baris bot -> langsung buka halaman detail bot itu.
-void App::on_open_bot(GtkTreeView *, gpointer self) {
+// Klik satu baris = jadikan bot itu "aktif" (dipakai panel KONTROL, tab
+// detail, dan perintah). Tidak memindah halaman.
+void App::on_bot_select(GtkTreeView *, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    std::string l = pilih_teks(a->view_bots_, 0);
+    if (!l.empty()) a->aktif_ = l;
+}
+
+// Dobel-klik / Enter pada baris bot -> buka halaman detail bot itu.
+// Klik tunggal TIDAK lagi membuka detail: itu hanya memilih bot (bisa banyak
+// baris sekaligus), supaya kontrol massal di panel KIRI masuk akal.
+void App::on_open_bot(GtkTreeView *, GtkTreePath *, GtkTreeViewColumn *, gpointer self) {
     auto *a = static_cast<App *>(self);
     std::string nama = a->selected_bot();
     if (nama.empty()) return;
@@ -769,22 +876,163 @@ void App::on_del_bot(GtkButton *, gpointer self) {
 
 void App::on_connect(GtkButton *, gpointer self) {
     auto *a = static_cast<App *>(self);
-    std::string label = a->selected_bot();
-    if (label.empty()) return;
-    std::string err;
-    if (!a->post_ok("/api/connect", "{\"label\":\"" + jesc(label) + "\"}", &err))
-        a->append_console("[connect] " + label + ": " + err);
+    auto daftar = a->selected_bots();
+    if (daftar.empty()) return;
+    for (auto &label : daftar) {
+        std::string err;
+        if (!a->post_ok("/api/connect", "{\"label\":\"" + jesc(label) + "\"}", &err))
+            a->append_console("[connect] " + label + ": " + err);
+    }
     a->refresh_bots();
 }
 
 void App::on_disconnect(GtkButton *, gpointer self) {
     auto *a = static_cast<App *>(self);
-    std::string label = a->selected_bot();
-    if (label.empty()) return;
-    std::string err;
-    if (!a->post_ok("/api/disconnect", "{\"label\":\"" + jesc(label) + "\"}", &err))
-        a->append_console("[disconnect] " + label + ": " + err);
+    auto daftar = a->selected_bots();
+    if (daftar.empty()) return;
+    for (auto &label : daftar) {
+        std::string err;
+        if (!a->post_ok("/api/disconnect", "{\"label\":\"" + jesc(label) + "\"}", &err))
+            a->append_console("[disconnect] " + label + ": " + err);
+    }
     a->refresh_bots();
+}
+
+// label kosong = kerjakan semua bot (didukung /api/connect & /api/disconnect)
+void App::on_connect_semua(GtkButton *, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    std::string err;
+    if (!a->post_ok("/api/connect", "{\"label\":\"\"}", &err))
+        a->append_console("[connect semua] " + err);
+    else
+        a->append_console("[connect semua] dimulai");
+    a->refresh_bots();
+}
+
+void App::on_disconnect_semua(GtkButton *, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    std::string err;
+    if (!a->post_ok("/api/disconnect", "{\"label\":\"\"}", &err))
+        a->append_console("[disconnect semua] " + err);
+    else
+        a->append_console("[disconnect semua] selesai");
+    a->refresh_bots();
+}
+
+// Satu klik panah = satu langkah tile untuk SEMUA bot terpilih.
+// Memakai perintah "move <arah>" yang sudah ada di runner.
+void App::on_move(GtkButton *b, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    const char *arah = static_cast<const char *>(g_object_get_data(G_OBJECT(b), "arah"));
+    if (!arah) return;
+    auto daftar = a->selected_bots();
+    if (daftar.empty()) {
+        a->append_console("[move] pilih bot dulu di tabel");
+        return;
+    }
+    for (auto &label : daftar) {
+        std::string err;
+        if (!a->post_ok("/api/command",
+                        "{\"label\":\"" + jesc(label) + "\",\"command\":\"" +
+                            jesc(std::string("move ") + arah) + "\"}",
+                        &err))
+            a->append_console("[move] " + label + ": " + err);
+    }
+}
+
+// Kirim satu perintah ke SEMUA bot terpilih, tampilkan yang gagal.
+void App::kirim_ke_terpilih(const std::string &perintah, const std::string &tag) {
+    auto daftar = selected_bots();
+    if (daftar.empty()) {
+        append_console("[" + tag + "] pilih bot dulu di tabel");
+        return;
+    }
+    for (auto &label : daftar) {
+        std::string err;
+        if (!post_ok("/api/command",
+                     "{\"label\":\"" + jesc(label) + "\",\"command\":\"" +
+                         jesc(perintah) + "\"}",
+                     &err))
+            append_console("[" + tag + "] " + label + ": " + err);
+        else
+            append_console("[" + tag + "] " + label + " ok");
+    }
+}
+
+// Respawn bot terpilih (`action|respawn`).
+void App::on_respawn(GtkButton *, gpointer self) {
+    static_cast<App *>(self)->kirim_ke_terpilih("respawn", "respawn");
+}
+
+// Ambil objek di sekitar bot terpilih (radius default 3 tile).
+void App::on_collect(GtkButton *, gpointer self) {
+    static_cast<App *>(self)->kirim_ke_terpilih("collect", "collect");
+}
+
+// Baca level & gems: minta dialog profil diri sendiri (`action|wrench`
+// netid sendiri). Level tidak pernah dikirim server lewat paket status.
+void App::on_profil(GtkButton *, gpointer self) {
+    static_cast<App *>(self)->kirim_ke_terpilih("profil", "profil");
+}
+
+// Warp semua bot terpilih ke dunia yang diketik di entry_warp_.
+void App::on_warp(GtkWidget *w, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    std::string dunia = isi_entry(a->entry_warp_);
+    if (dunia.empty()) return;
+    auto daftar = a->selected_bots();
+    if (daftar.empty()) {
+        a->append_console("[warp] pilih bot dulu di tabel");
+        return;
+    }
+    for (auto &label : daftar) {
+        std::string err;
+        if (!a->post_ok("/api/command",
+                        "{\"label\":\"" + jesc(label) + "\",\"command\":\"" +
+                            jesc("warp " + dunia) + "\"}",
+                        &err))
+            a->append_console("[warp] " + label + ": " + err);
+        else
+            a->append_console("[warp] " + label + " -> " + dunia);
+    }
+    if (GTK_IS_ENTRY(w)) gtk_entry_set_text(GTK_ENTRY(w), "");
+}
+
+void App::on_pilih_semua(GtkButton *, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    if (!a->store_bots_) return;
+    // Semua baris terlihat ikut tercentang (yang tersaring pencarian saja).
+    GtkTreeModel *m = GTK_TREE_MODEL(a->store_bots_);
+    GtkTreeIter it;
+    bool semua = true;
+    for (gboolean ok = gtk_tree_model_get_iter_first(m, &it); ok;
+         ok = gtk_tree_model_iter_next(m, &it)) {
+        gchar *l = nullptr;
+        gtk_tree_model_get(m, &it, 0, &l, -1);
+        if (l && !a->dipilih_.count(l)) semua = false;
+        g_free(l);
+        if (!semua) break;
+    }
+    for (gboolean ok = gtk_tree_model_get_iter_first(m, &it); ok;
+         ok = gtk_tree_model_iter_next(m, &it)) {
+        gchar *l = nullptr;
+        gtk_tree_model_get(m, &it, 0, &l, -1);
+        if (l && *l) {
+            if (semua) a->dipilih_.erase(l);
+            else       a->dipilih_.insert(l);
+        }
+        gtk_list_store_set(a->store_bots_, &it, 9, !semua, -1);
+        g_free(l);
+    }
+}
+
+void App::on_multi_select(GtkToggleButton *t, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    if (!a->view_bots_) return;
+    gtk_tree_selection_set_mode(
+        gtk_tree_view_get_selection(GTK_TREE_VIEW(a->view_bots_)),
+        gtk_toggle_button_get_active(t) ? GTK_SELECTION_MULTIPLE
+                                        : GTK_SELECTION_SINGLE);
 }
 
 void App::on_send_cmd(GtkButton *, gpointer self) {
@@ -988,11 +1236,23 @@ gboolean App::on_tick(gpointer self) {
     auto *a = static_cast<App *>(self);
     a->refresh_bots();
     a->refresh_detail_chat();
+    a->refresh_detail_paket();
     if (++a->tick_n_ % 4 == 0) a->refresh_detail_map();
     return TRUE;
 }
 
 void App::on_destroy(GtkWidget *, gpointer) { gtk_main_quit(); }
+
+// Window tanpa headerbar: minimize/exit ditangani sendiri.
+void App::on_minimize(GtkButton *, gpointer a) {
+    auto *x = static_cast<App *>(a);
+    if (x->window_) gtk_window_iconify(GTK_WINDOW(x->window_));
+}
+
+void App::on_quit(GtkButton *, gpointer a) {
+    auto *x = static_cast<App *>(a);
+    if (x->window_) gtk_window_close(GTK_WINDOW(x->window_));
+}
 
 // -------------------------------------------------------------- dialog ---
 void App::dialog_add_bot() {
@@ -1057,16 +1317,50 @@ void App::dialog_add_bot() {
     gtk_widget_destroy(d);
 }
 
+namespace {
+
+// Muat isi file teks apa adanya. Dipakai tombol "Impor file" di dialog proxy
+// supaya daftar hasil ekspor (mis. webshare) tidak perlu disalin manual.
+struct ImporProxy {
+    GtkWidget *tv;
+    GtkWidget *dlg;
+};
+
+void on_impor_proxy(GtkButton *, gpointer u) {
+    auto *s = static_cast<ImporProxy *>(u);
+    GtkWidget *fc = gtk_file_chooser_dialog_new(
+        "Pilih file daftar proxy", GTK_WINDOW(s->dlg), GTK_FILE_CHOOSER_ACTION_OPEN,
+        "Batal", GTK_RESPONSE_CANCEL, "Buka", GTK_RESPONSE_ACCEPT, nullptr);
+    if (gtk_dialog_run(GTK_DIALOG(fc)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
+        if (path) {
+            std::ifstream f(path);
+            std::string isi((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+            if (!isi.empty()) isi_textview(s->tv, isi);
+            g_free(path);
+        }
+    }
+    gtk_widget_destroy(fc);
+}
+
+}  // namespace
+
 void App::dialog_add_proxy() {
     GtkWidget *d = gtk_dialog_new_with_buttons(
         "Tambah Proxy", GTK_WINDOW(window_), GTK_DIALOG_MODAL,
         "Batal", GTK_RESPONSE_CANCEL, "Tambah", GTK_RESPONSE_ACCEPT, nullptr);
-    gtk_window_set_default_size(GTK_WINDOW(d), 460, 320);
+    gtk_window_set_default_size(GTK_WINDOW(d), 520, 380);
     GtkWidget *area = gtk_dialog_get_content_area(GTK_DIALOG(d));
     gtk_container_set_border_width(GTK_CONTAINER(area), 16);
 
-    GtkWidget *l = gtk_label_new("Satu proxy per baris: host:port atau user:pass@host:port");
-    gtk_widget_set_halign(l, GTK_ALIGN_START);
+    GtkWidget *l = gtk_label_new(
+        "Satu proxy per baris:\n"
+        "host:port  ·  user:pass@host:port  ·  host:port:user:pass (ekspor webshare)\n"
+        "socks5://user:pass@host:port");
+    gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+    GtkStyleContext *lc = gtk_widget_get_style_context(l);
+    gtk_style_context_add_class(lc, "dim");
     gtk_box_pack_start(GTK_BOX(area), l, FALSE, FALSE, 0);
 
     GtkWidget *tv = gtk_text_view_new();
@@ -1074,6 +1368,22 @@ void App::dialog_add_proxy() {
     GtkWidget *sc = gtk_scrolled_window_new(nullptr, nullptr);
     gtk_widget_set_size_request(sc, -1, 200);
     gtk_container_add(GTK_CONTAINER(sc), tv);
+
+    GtkWidget *impor = gtk_button_new_with_label("Impor file…");
+    gtk_widget_set_halign(impor, GTK_ALIGN_START);
+    GtkStyleContext *ic = gtk_widget_get_style_context(impor);
+    gtk_style_context_add_class(ic, "dim");
+    GtkWidget *barbawah = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(barbawah), impor, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(area), barbawah, FALSE, FALSE, 0);
+
+    // Data ikut hidup/mati bersama dialog; callback hanya menumpang.
+    auto *ctx = g_new0(ImporProxy, 1);
+    ctx->tv = tv;
+    ctx->dlg = d;
+    g_signal_connect(impor, "clicked", G_CALLBACK(on_impor_proxy), ctx);
+    g_object_set_data_full(G_OBJECT(d), "impor-proxy", ctx, g_free);
+
     gtk_box_pack_start(GTK_BOX(area), sc, TRUE, TRUE, 8);
     gtk_widget_show_all(d);
 
@@ -1110,17 +1420,67 @@ void App::build_sidebar(const std::string &pilih) {
     for (GList *it = anak; it; it = it->next) gtk_widget_destroy(GTK_WIDGET(it->data));
     g_list_free(anak);
 
-    for (auto &kv : halaman_fitur_) {
-        GtkWidget *row = gtk_list_box_row_new();
-        GtkWidget *l = gtk_label_new(kv.first.c_str());
+    // Urutkan mengikuti skema server (bukan nama), lalu kelompokkan: satu
+    // judul grup per kategori, tidak diulang walau fiturnya berselang-seling.
+    std::vector<std::pair<std::string, HalamanFitur *>> urut;
+    for (auto &kv : halaman_fitur_) urut.push_back({kv.first, &kv.second});
+    std::sort(urut.begin(), urut.end(),
+              [](const std::pair<std::string, HalamanFitur *> &a,
+                 const std::pair<std::string, HalamanFitur *> &b) {
+                  return a.second->urut < b.second->urut;
+              });
+
+    std::vector<std::string> kategori;
+    for (auto &kv : urut) {
+        if (kv.second->kategori.empty()) continue;
+        if (std::find(kategori.begin(), kategori.end(), kv.second->kategori) ==
+            kategori.end())
+            kategori.push_back(kv.second->kategori);
+    }
+
+    for (auto &kat : kategori) {
+        GtkWidget *h = gtk_list_box_row_new();
+        // Baris judul tidak boleh bisa dipilih: seleksi baris judul akan
+        // memicu on_detail_row dengan nama fitur kosong.
+        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(h), FALSE);
+        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(h), FALSE);
+        GtkWidget *l = gtk_label_new(kat.c_str());
         gtk_widget_set_halign(l, GTK_ALIGN_START);
         gtk_widget_set_margin_start(l, 10);
-        gtk_widget_set_margin_end(l, 10);
-        gtk_widget_set_margin_top(l, 7);
-        gtk_widget_set_margin_bottom(l, 7);
-        gtk_container_add(GTK_CONTAINER(row), l);
+        gtk_widget_set_margin_top(l, 10);
+        gtk_widget_set_margin_bottom(l, 2);
+        GtkStyleContext *c = gtk_widget_get_style_context(l);
+        gtk_style_context_add_class(c, "sectitle");
+        gtk_container_add(GTK_CONTAINER(h), l);
+        gtk_list_box_insert(GTK_LIST_BOX(detail_list_), h, -1);
+
+        for (auto &kv : urut) {
+            if (kv.second->kategori != kat) continue;
+            GtkWidget *row = gtk_list_box_row_new();
+            GtkWidget *lab = gtk_label_new(kv.first.c_str());
+            gtk_widget_set_halign(lab, GTK_ALIGN_START);
+            gtk_widget_set_margin_start(lab, 20);
+            gtk_widget_set_margin_end(lab, 10);
+            gtk_widget_set_margin_top(lab, 6);
+            gtk_widget_set_margin_bottom(lab, 6);
+            gtk_container_add(GTK_CONTAINER(row), lab);
+            gaya_baris(row);
+            g_object_set_data_full(G_OBJECT(row), "fitur",
+                                   g_strdup(kv.first.c_str()), g_free);
+            gtk_list_box_insert(GTK_LIST_BOX(detail_list_), row, -1);
+        }
+    }
+    // Fitur tanpa kategori (kalau skema lama) tetap tampil di akhir.
+    for (auto &kv : urut) {
+        if (!kv.second->kategori.empty()) continue;
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *lab = gtk_label_new(kv.first.c_str());
+        gtk_widget_set_halign(lab, GTK_ALIGN_START);
+        gtk_widget_set_margin_start(lab, 10);
+        gtk_container_add(GTK_CONTAINER(row), lab);
         gaya_baris(row);
-        g_object_set_data_full(G_OBJECT(row), "fitur", g_strdup(kv.first.c_str()), g_free);
+        g_object_set_data_full(G_OBJECT(row), "fitur",
+                               g_strdup(kv.first.c_str()), g_free);
         gtk_list_box_insert(GTK_LIST_BOX(detail_list_), row, -1);
     }
     gtk_widget_show_all(detail_list_);
@@ -1144,6 +1504,7 @@ void App::build_sidebar(const std::string &pilih) {
 }
 
 void App::build_feature_page(const std::string &nama, const std::string &ket,
+                             const std::string &kategori,
                              const std::string &fitur, JsonArray *kontrol,
                              JsonObject *nilai) {
     kunci_fitur_[nama] = fitur;
@@ -1213,9 +1574,11 @@ void App::build_feature_page(const std::string &nama, const std::string &ket,
             GtkStyleContext *c = gtk_widget_get_style_context(w);
             gtk_style_context_add_class(c, cls.c_str());
             g_object_set_data_full(G_OBJECT(w), "fitur", g_strdup(nama.c_str()), g_free);
+            g_object_set_data_full(G_OBJECT(w), "kunci",
+                                   g_strdup(jstr(k, "kunci").c_str()), g_free);
             g_object_set_data_full(G_OBJECT(w), "aksi",
                                    g_strdup(jstr(k, "aksi").c_str()), g_free);
-            g_signal_connect(w, "clicked", G_CALLBACK(on_replay_aksi), this);
+            g_signal_connect(w, "clicked", G_CALLBACK(on_fitur_tombol), this);
             (void)gaya;
             gtk_widget_set_halign(w, GTK_ALIGN_START);
             gtk_grid_attach(GTK_GRID(grid), w, 0, baris, 2, 1);
@@ -1350,7 +1713,8 @@ void App::build_feature_page(const std::string &nama, const std::string &ket,
     gtk_widget_set_vexpand(kosong, TRUE);
     gtk_box_pack_start(GTK_BOX(isi), kosong, TRUE, TRUE, 0);
 
-    halaman_fitur_[nama] = scroll;
+    halaman_fitur_[nama] = {scroll, kategori,
+                            static_cast<int>(halaman_fitur_.size())};
     gtk_stack_add_named(GTK_STACK(detail_stack_), scroll, nama.c_str());
     // GtkStack hanya memilih child yang visible; halaman dibuat setelah
     // window di-show, jadi harus di-show di sini.
@@ -1385,7 +1749,8 @@ void App::refresh_detail_schema() {
             JsonObject *isi = (nilai && json_object_has_member(nilai, fitur.c_str()))
                                   ? jobj(json_object_get_member(nilai, fitur.c_str()))
                                   : nullptr;
-            build_feature_page(nama, jstr(k, "keterangan"), fitur, kontrol, isi);
+            build_feature_page(nama, jstr(k, "keterangan"), jstr(k, "kategori"),
+                               fitur, kontrol, isi);
         }
         skema_siap_ = true;
         build_sidebar(pertama);
@@ -1533,7 +1898,9 @@ void App::on_fitur_stop(GtkButton *b, gpointer self) {
                &err);
 }
 
-void App::on_replay_aksi(GtkButton *b, gpointer self) {
+// Tombol aksi di halaman fitur (Current position, Current world, Add,
+// Trigger, dst). `aksi` dikirim apa adanya; web.py yang menjalankannya.
+void App::on_fitur_tombol(GtkButton *b, gpointer self) {
     auto *a = static_cast<App *>(self);
     const char *f = static_cast<const char *>(g_object_get_data(G_OBJECT(b), "fitur"));
     const char *aksi = static_cast<const char *>(g_object_get_data(G_OBJECT(b), "aksi"));
@@ -1541,11 +1908,12 @@ void App::on_replay_aksi(GtkButton *b, gpointer self) {
     auto it = a->kunci_fitur_.find(f);
     std::string kunci = (it != a->kunci_fitur_.end()) ? it->second : f;
     std::string err;
-    a->post_ok("/api/feature",
-               "{\"label\":\"" + jesc(a->aktif_) + "\",\"feature\":\"" +
-                   jesc(kunci) + "\",\"action\":\"" + jesc(aksi) +
-                   "\",\"opts\":" + a->opts_fitur(kunci) + "}",
-               &err);
+    if (!a->post_ok("/api/feature",
+                    "{\"label\":\"" + jesc(a->aktif_) + "\",\"feature\":\"" +
+                        jesc(kunci) + "\",\"action\":\"" + jesc(aksi) +
+                        "\",\"opts\":" + a->opts_fitur(kunci) + "}",
+                    &err))
+        a->append_console("[aksi " + std::string(aksi) + "] " + err);
 }
 
 // --------------------------------------------------------------- peta ---
@@ -1568,7 +1936,10 @@ GdkPixbuf *App::sprite(int id) {
         }
         g_object_unref(l);
     }
-    sprite_cache_[id] = pb;
+    // Jangan cache kegagalan: backend bisa belum siap (items.dat belum dimuat)
+    // saat frame pertama. Dulu nullptr ikut tersimpan sehingga tile menampilkan
+    // kotak coklat selamanya walau backend sudah pulih.
+    if (pb) sprite_cache_[id] = pb;
     return pb;
 }
 

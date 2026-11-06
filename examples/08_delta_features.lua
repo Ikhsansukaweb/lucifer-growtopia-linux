@@ -17,7 +17,7 @@ end)
 -- Tanpa autofarm_set_tiles, sasaran = semua tile berlatar tanah.
 -- Dinyalakan setelah dunia termuat (start() menolak kalau bot offline).
 -- ------------------------------------------------------------------ --
-autofarm_set_seed(964)                  -- 964 = Dirt Seed (contoh)
+autofarm_set_block(2)                   -- 2 = Dirt (break & place blok ini)
 autofarm_set_tiles({{10, 12}, {11, 12}, {12, 12}})
 autocollect_set_radius(3)
 

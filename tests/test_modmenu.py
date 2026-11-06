@@ -39,7 +39,7 @@ def bot_uji() -> Bot:
 
 print("== skema ==")
 skema = skema_fitur()
-cek("ada 6 fitur", len(skema) == 6, str([s["nama"] for s in skema]))
+cek("ada 13 fitur (paritas deltaX)", len(skema) == 13, str([s["nama"] for s in skema]))
 cek("tiap fitur punya fitur+kontrol",
     all(s.get("fitur") and s.get("kontrol") for s in skema))
 
@@ -85,9 +85,9 @@ cek("skema autofarm tile count 5",
     [k for k in skema_fitur() if k["fitur"] == "autofarm"][0]
     and [k.get("count") for k in [k for k in skema_fitur() if k["fitur"] == "autofarm"][0]["kontrol"]
          if k["tipe"] == "tile"] == [5])
-cek("skema autocollect tile count 11",
+cek("skema autocollect punya pemilih tile",
     [k.get("count") for k in [k for k in skema_fitur() if k["fitur"] == "autocollect"][0]["kontrol"]
-     if k["tipe"] == "tile"] == [11])
+     if k["tipe"] == "tile"] == [5])
 
 sp = b.fitur.spammer
 srv._set_parameter(sp, {"delay": "900", "shuffle": True, "teks": "a\nb\n"})

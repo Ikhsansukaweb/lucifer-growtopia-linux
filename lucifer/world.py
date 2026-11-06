@@ -182,6 +182,10 @@ class World:
     current_weather: int = 0
     version: int = 0
     flags: int = 0
+    # uid tertinggi yang sudah dipakai server (dari SendMapData). Objek baru
+    # dari `ItemChangeObject` tidak membawa uid; klien asli menomori sendiri
+    # dengan menaikkan nilai ini.
+    last_uid: int = 0
     error: str = ""
 
     @property
@@ -250,7 +254,13 @@ def parse_world(data: bytes, item_db=None) -> World:
 
         r.skip(12)
         n_dropped = r.u32()
-        r.u32()  # last uid
+        # last_uid = uid tertinggi yang sudah dipakai. Server TIDAK
+        # mengirim uid objek baru pada ItemChangeObject; klien asli
+        # memakai penghitung ini untuk menomori objek berikutnya.
+        # Tanpa nilai ini, autocollect mengirim type 11 dengan uid salah
+        # sehingga hanya berhasil untuk objek yang uid-nya diketahui dari
+        # SendMapData (yaitu saat baru masuk world) — persis gejalanya.
+        w.last_uid = r.u32()
         for _ in range(n_dropped):
             w.dropped.append(
                 DroppedItem(item_id=r.u16(), x=r.f32(), y=r.f32(), count=r.u8(), flags=r.u8(), uid=r.u32())
