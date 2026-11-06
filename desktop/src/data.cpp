@@ -80,6 +80,33 @@ std::string combo_aktif(GtkWidget *combo) {
 }
 
 // Isi kotak teks multi-baris.
+// `gtk_text_buffer_set_text()` SELALU mengembalikan posisi scroll ke atas.
+// Karena daftar paket di-refresh tiap detik, tampilan jadi melompat terus dan
+// tidak bisa dibaca. Solusi: simpan posisi scroll sebelum menulis, kembalikan
+// setelah layout selesai. TIDAK ada auto-follow ke bawah — pengguna yang
+// menentukan sendiri posisi baca.
+struct GulirSimpan {
+    GtkWidget *sc;
+    double nilai;
+};
+
+// Widget scrolled-window induk dari sebuah text view (bisa nullptr).
+GtkWidget *gulir_bawah(GtkWidget *tv) { return gtk_widget_get_parent(tv); }
+
+gboolean pulihkan_gulir(gpointer data) {
+    auto *g = static_cast<GulirSimpan *>(data);
+    if (g->sc && GTK_IS_SCROLLED_WINDOW(g->sc)) {
+        GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(g->sc));
+        if (adj) {
+            double atas = gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj);
+            if (atas < 0) atas = 0;
+            gtk_adjustment_set_value(adj, g->nilai > atas ? atas : g->nilai);
+        }
+    }
+    delete g;
+    return G_SOURCE_REMOVE;
+}
+
 void isi_textview(GtkWidget *tv, const std::string &teks) {
     GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
     gtk_text_buffer_set_text(b, teks.c_str(), static_cast<gint>(teks.size()));
@@ -339,11 +366,10 @@ void App::refresh_detail() {
                 }
             }
             isi_textview(view_console_, teks);
-            GtkTextIter end;
-            GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view_console_));
-            gtk_text_buffer_get_end_iter(b, &end);
-            gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(view_console_), &end,
-                                         0.0, FALSE, 0.0, 0.0);
+            // Tanpa dipindah ke idle, scroll diabaikan karena layout belum
+            // selesai; teks panjang membuat tampilan tetap di baris pertama.
+            g_idle_add(pulihkan_gulir,
+                       new GulirSimpan{gulir_bawah(view_console_), 1e9});
         }
     }
 
@@ -394,11 +420,8 @@ void App::refresh_detail_chat() {
         if (static_cast<int>(n) != chat_lines_) {
             chat_lines_ = static_cast<int>(n);
             isi_textview(view_chat_, teks);
-            GtkTextIter end;
-            GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view_chat_));
-            gtk_text_buffer_get_end_iter(b, &end);
-            gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(view_chat_), &end,
-                                         0.0, FALSE, 0.0, 0.0);
+            g_idle_add(pulihkan_gulir,
+                       new GulirSimpan{gulir_bawah(view_chat_), 1e9});
         }
     }
     json_object_unref(o);
@@ -487,12 +510,19 @@ void App::refresh_detail_paket() {
         teks += "\n";
     }
     if (teks == paket_ttd_) { json_object_unref(o); return; }
+
+    // Simpan posisi scroll SEKARANG, kembalikan sesudah teks ditulis ulang.
+    GtkWidget *sc = gtk_widget_get_parent(view_paket_);
+    double nilai = 0.0;
+    if (sc && GTK_IS_SCROLLED_WINDOW(sc)) {
+        if (GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sc))) {
+            nilai = gtk_adjustment_get_value(adj);
+        }
+    }
+
     paket_ttd_ = teks;
     isi_textview(view_paket_, teks);
-    GtkTextIter end;
-    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view_paket_));
-    gtk_text_buffer_get_end_iter(b, &end);
-    gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(view_paket_), &end, 0.0, FALSE, 0.0, 0.0);
+    if (sc) g_idle_add(pulihkan_gulir, new GulirSimpan{sc, nilai});
     json_object_unref(o);
 }
 

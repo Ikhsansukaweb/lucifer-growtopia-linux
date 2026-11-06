@@ -28,6 +28,7 @@ from .account import (Account, RedirectInfo, detik_tunggu,
                       sedang_maintenance)
 from .enet import ENetHost
 from .items import ItemDatabase
+from . import nama as N
 from .protocol import NetGamePacket as G, NetMessage as M, Tank
 from .world import DroppedItem, Tile, World, parse_tile_updates, parse_world
 
@@ -358,6 +359,10 @@ class Bot:
         self.malady = ""
         # Level hanya dikirim server di dialog profil; minta sekali per sesi.
         self._profil_diminta = False
+        # Item terakhir yang jatuh: (px, py, waktu). Dipakai autofarm sebagai
+        # bukti blok pecah. Posisi drop TIDAK pas di tile (item menyebar),
+        # jadi pencocokan memakai jarak piksel, bukan nomor tile.
+        self._drop_baru: list[tuple[float, float, float]] = []
         # Markup dialog terakhir (diagnosis format server).
         self.dialog_terakhir = ""
         self.playtime = 0
@@ -753,31 +758,9 @@ class Bot:
             "isi": str(ringkas)[:400],
         })
 
-    @staticmethod
-    def _ringkas_tank(t: Tank) -> str:
-        """Ringkas TankPacket jadi satu baris yang enak dibaca."""
-        nama = _TANK_NAMA.get(int(t.type), str(int(t.type)))
-        bagian = [f"type={int(t.type)}({nama})"]
-        if t.net_id:
-            bagian.append(f"netid={t.net_id}")
-        if t.int_x or t.int_y:
-            bagian.append(f"tile=({t.int_x},{t.int_y})")
-        if t.vector_x or t.vector_y:
-            bagian.append(f"pos=({t.vector_x:.0f},{t.vector_y:.0f})")
-        if t.vector_x2 or t.vector_y2:
-            bagian.append(f"vec2=({t.vector_x2:.0f},{t.vector_y2:.0f})")
-        if t.value:
-            bagian.append(f"value={t.value}")
-        if t.object_type:
-            bagian.append(f"obj={t.object_type}")
-        if t.animation_type:
-            bagian.append(f"anim={t.animation_type}")
-        if t.jump_count:
-            bagian.append(f"jump={t.jump_count}")
-        if t.flags:
-            bagian.append(f"flags=0x{t.flags:x}")
-        return " ".join(bagian)
-
+    def _ringkas_tank(self, t: Tank) -> str:
+        """Ringkas TankPacket dengan nama manusiawi (lihat `lucifer/nama.py`)."""
+        return N.ringkas_tank(t, self.items_db)
     # ------------------------------------------------------------------ #
     # Penanganan paket masuk
     # ------------------------------------------------------------------ #
@@ -934,6 +917,19 @@ class Bot:
             self._emit("inventory", self.inventory)
         elif t == G.SendItemDatabaseData:
             self._save_items(ext)
+        elif t == G.TileApplyDamage:
+            # Server mengirim type 8 tiap pukulan diterima, TANPA diikuti
+            # type 5/6 untuk blok yang kita pukul sendiri. Jadi ini satu-
+            # satunya umpan balik "pukulan ke-N diterima". Hitungan dipakai
+            # autofarm untuk tahu kapan blok benar-benar pecah.
+            self._apply_damage(tank)
+        elif t == G.TileChangeRequest:
+            # Server meng-ECHO `TileChangeRequest` kembali ke kita (netid =
+            # netid bot) setelah aksi diterima. Ini konfirmasi NYATA untuk
+            # `place`: `value` = item id yang benar-benar terpasang, jadi
+            # stok lokal bisa dikurangi dari sini (server retail tidak
+            # mengirim `ModifyItemInventory` untuk place).
+            self._apply_tile_change_echo(tank)
         elif t == G.PingRequest:
             self._reply_ping(tank)
         elif t == G.SendTileUpdateData:
@@ -1189,6 +1185,85 @@ class Bot:
         )
         self.send_raw(reply)
 
+    # id tile -> jumlah pukulan yang sudah diterima server pada tile itu
+    _hit_tiles: dict[tuple[int, int], int] = {}
+
+    def _apply_damage(self, tank: Tank) -> None:
+        """Catat satu pukulan yang diterima server (`TileApplyDamage`).
+
+        Format: `int_x`/`int_y` = tile, `value` = nilai damage mentah
+        (bukan jumlah total). Kita hanya butuh tahu tile mana yang kena,
+        lalu hitungan sendiri dinaikkan satu.
+        """
+        key = (int(tank.int_x), int(tank.int_y))
+        if key[0] < 0 or key[1] < 0:
+            return
+        self._hit_tiles[key] = self._hit_tiles.get(key, 0) + 1
+
+    def ada_drop_dekat(self, x: int, y: int, radius_px: float = 40.0,
+                       dalam_detik: float = 3.0) -> bool:
+        """Apakah ada item jatuh di dekat tile ini baru-baru ini?
+
+        Ini bukti blok pecah: server tidak mengirim paket "tile jadi kosong",
+        tapi SELALU mengirim `ItemChangeObject` di posisi blok yang pecah
+        (bloknya sendiri atau bibitnya). Posisi drop menyebar beberapa piksel,
+        jadi dipakai jarak, bukan nomor tile.
+        """
+        cx, cy = x * 32 + 16, y * 32 + 16
+        batas = time.time() - dalam_detik
+        for dx, dy, ts in self._drop_baru:
+            if ts < batas:
+                continue
+            if abs(dx - cx) <= radius_px and abs(dy - cy) <= radius_px:
+                return True
+        return False
+
+    def bersihkan_drop(self) -> None:
+        self._drop_baru.clear()
+
+    def hit_count(self, x: int, y: int) -> int:
+        """Jumlah pukulan yang sudah diterima server untuk tile ini."""
+        return self._hit_tiles.get((int(x), int(y)), 0)
+
+    def reset_hit(self, x: int, y: int) -> None:
+        self._hit_tiles.pop((int(x), int(y)), None)
+
+    def _apply_tile_change_echo(self, tank: Tank) -> None:
+        """Kurangi stok lokal saat server mengonfirmasi `place`.
+
+        Bukti dari jurnal paket nyata (server retail 5.58):
+
+            in type=3(TileChangeRequest) netid=14 tile=(55,23) value=2
+
+        `value` adalah item id yang berhasil ditaruh. Hanya aksi dengan item
+        id > 0 yang mengurangi stok; `value == 18` (Fist) berarti pukulan,
+        bukan pemakaian item.
+        """
+        item_id = int(tank.value)
+        if item_id <= 0:
+            return
+        x, y = int(tank.int_x), int(tank.int_y)
+        if item_id in (ITEM_FIST, ITEM_WRENCH):
+            # Pukulan/wrench: bukan pemakaian item, tapi tetap kabar bahwa
+            # tile ini disentuh. Jangan ubah isi dunia dari sini (server yang
+            # menentukan kapan blok hilang).
+            return
+        # Place diterima server: blok ini BENAR-BENAR ada di dunia sekarang.
+        # Tanpa menerapkannya ke `world` lokal, bot tidak tahu blok baru sudah
+        # terpasang sehingga tidak pernah memecahnya lagi (dan peta GUI
+        # tertinggal). Update lokal di sini, lalu biarkan type 5/6 menimpa
+        # kalau server mengirimnya.
+        lama = self.world.tile(x, y)
+        if lama is not None and x >= 0 and y >= 0:
+            baru = Tile(x=x, y=y, fg=item_id, bg=lama.bg,
+                        parent=lama.parent, flags=0)
+            self.world.update_tile(self.world.index_of(x, y), baru)
+            self._emit("tile_update", baru)
+        if self.inventory.getItemCount(item_id) <= 0:
+            return
+        self.inventory.kurangi(item_id, 1)
+        self._emit("inventory", self.inventory)
+
     def _apply_modify_inventory(self, tank: Tank) -> None:
         """`ModifyItemInventory` (tank type 13) — stok satu item naik/turun.
 
@@ -1357,32 +1432,59 @@ class Bot:
             uid = int(tank.value)
             if not uid:
                 return
-            if int(tank.net_id) in (-1, 0xFFFFFFFF):
+            if int(tank.net_id) in (-1, 0xFFFFFFFF, -3, 0xFFFFFFFD):
                 x, y = float(tank.vector_x), float(tank.vector_y)
-                # PENTING: untuk item yang BARU JATUH, `value` = item_id,
-                # BUKAN uid objek. Bukti: drop Dirt (item_id 2) ->
-                # `type=14 netid=-1 pos=(1760,845) value=2`, sedangkan uid 2
-                # sudah dipakai objek lain di map.
+                # Layout asli `ItemChangeObject` (Gurotopia
+                # `database/world.cpp:add_object` + `merge_object`):
                 #
-                # uid objek baru tidak dikirim server. Klien asli menomori
-                # sendiri dari penghitung `last_uid` yang diterima di
-                # SendMapData (lihat `World.last_uid`), dan itulah uid yang
-                # dipakai `ItemActivateObjectRequest`. Tanpa ini type 11
-                # selalu membawa uid salah dan hanya berhasil untuk objek
-                # yang uid-nya diketahui dari SendMapData (saat join).
-                # [Verifikasi: butuh 1x connect dengan server.]
-                self.world.last_uid = int(self.world.last_uid) + 1
-                uid = int(self.world.last_uid)
-                self.world.dropped.append(
-                    DroppedItem(item_id=int(tank.value), x=x, y=y,
-                                count=1, uid=uid))
-                self._emit("dropped", uid)
+                #   netid            = -1 (baru) atau -3 (digabung ke objek lama)
+                #   target_net_id    = UID objek          <- BUKAN dikarang sendiri
+                #   float_variable   = JUMLAH item        <- BUKAN selalu 1
+                #   value            = item id
+                #   vector_x/y       = posisi piksel
+                #
+                # Versi lama mengarang uid dari `last_uid + 1` dan selalu
+                # memakai count=1. Akibatnya drop 80 blok hanya terbaca 1, dan
+                # uid yang dipakai `ItemActivateObjectRequest` tidak cocok
+                # dengan yang dipegang server sehingga pengambilan gagal.
+                item_id = int(tank.value)
+                jumlah = int(tank.float_variable)
+                if jumlah <= 0:
+                    jumlah = 1
+                uid_asli = int(tank.target_net_id)
+                if uid_asli <= 0 or uid_asli == 0x7FFFFFFF:
+                    self.world.last_uid = int(self.world.last_uid) + 1
+                    uid_asli = int(self.world.last_uid)
+                else:
+                    # Server memberi uid; simpan supaya penomoran berikutnya
+                    # tidak bentrok.
+                    if uid_asli > int(self.world.last_uid):
+                        self.world.last_uid = uid_asli
+
+                lama = next((o for o in self.world.dropped if o.uid == uid_asli), None)
+                if lama is not None:
+                    # Objek yang sama di tile yang sama: jumlahnya bertambah.
+                    lama.count = min(255, int(lama.count) + jumlah)
+                    lama.x, lama.y = x, y
+                    self._emit("dropped", uid_asli)
+                else:
+                    self.world.dropped.append(
+                        DroppedItem(item_id=item_id, x=x, y=y,
+                                    count=jumlah, uid=uid_asli))
+                    self._emit("dropped", uid_asli)
+                # Drop di tile X = blok di tile X baru saja pecah. Ini
+                # SATU-SATUNYA bukti pecah yang dikirim server (tidak ada
+                # paket tile-update untuk punch sendiri, dan `TileApplyDamage`
+                # hanya konfirmasi pukulan, sering kurang dari jumlah pukulan).
+                self._drop_baru.append((x, y, time.time()))
+                if len(self._drop_baru) > 64:
+                    del self._drop_baru[:32]
                 self.catat_paket("in", 14,
-                                 f"DROP uid={uid} item_id={int(tank.value)} "
-                                 f"pos=({x:.0f},{y:.0f}) "
+                                 f"DROP uid={uid_asli} item_id={item_id} "
+                                 f"count={jumlah} pos=({x:.0f},{y:.0f}) "
                                  f"radius={self.auto_collect_radius * 32}px "
                                  f"auto={self.auto_collect}")
-                self._auto_ambil(uid, x, y)
+                self._auto_ambil(uid_asli, x, y)
             else:
                 # netid = pemain yang mengambil. Kalau itu BOT SENDIRI, server
                 # tidak mengirim ulang inventaris (tidak ada type 9/13) — hanya
@@ -1895,6 +1997,27 @@ class Bot:
             ox, oy = px, py
         else:
             ox, oy = self.local.posx, self.local.posy
+        # Paket State (type 0) lebih dulu: ini yang membuat TANGAN bergerak.
+        # Tanpa ini bot terlihat diam lalu blok tiba-tiba terpukul.
+        # Nilai `state` dari `library.lua:tileChange` deltaX:
+        #   2592/2608 = animasi pukul (kanan/kiri)
+        #   3104/3120 = animasi taruh (kanan/kiri)
+        if self.local is not None:
+            ke_kiri = float(x * 32) < self.local.posx
+            if int(value) == ITEM_FIST:
+                state = 2608 if ke_kiri else 2592
+            else:
+                state = 3120 if ke_kiri else 3104
+            self.send_raw(
+                Tank(
+                    type=G.State,
+                    int_x=int(x), int_y=int(y),
+                    value=int(value),
+                    vector_x=ox, vector_y=oy,
+                    # offset 16 = field `state` (Gurotopia: `.state = i32[4]`)
+                    float_variable=float(state),
+                )
+            )
         return self.send_raw(
             Tank(
                 type=G.TileChangeRequest,

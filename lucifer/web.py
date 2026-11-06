@@ -937,11 +937,18 @@ class Handler(BaseHTTPRequestHandler):
         # autopunch_delay, overclock, autodrop_*, ...); fitur lain pakai
         # atribut langsung.
         if aksi == "atur":
-            hasil = {"ok": True, "label": bot.label, "status": fb.status()}
+            # Terapkan dulu, BARU ambil status. Versi lama memanggil
+            # `fb.status()` sebelum `atur()` sehingga respons berisi nilai
+            # LAMA — terlihat seperti "set tile tidak pernah kepakai"
+            # padahal parameternya sudah tersimpan.
+            diterapkan = None
             if opts:
                 atur = getattr(obj, "atur", None)
-                hasil["diterapkan"] = (
-                    atur(**opts) if atur else self._set_parameter(obj, opts))
+                diterapkan = (atur(**opts) if atur
+                              else self._set_parameter(obj, opts))
+            hasil = {"ok": True, "label": bot.label, "status": fb.status()}
+            if diterapkan is not None:
+                hasil["diterapkan"] = diterapkan
             return hasil
 
         # simpan parameter dulu, baru jalankan

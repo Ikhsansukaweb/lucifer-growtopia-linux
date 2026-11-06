@@ -1098,6 +1098,82 @@ def test_proxypool_kredensial_unik() -> None:
             hapus["dihapus"] == 5 and hapus["total"] == 0, str(hapus))
 
 
+def test_echo_place_kurangi_inventory() -> None:
+    bagian("7g. Echo TileChangeRequest (place) mengurangi stok")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.inventory.items.clear()
+    bot.inventory.tambah(14, 5)
+
+    # Server echo: netid bot, value = item id yang berhasil ditaruh.
+    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    cek("place Cave Background -> stok 4",
+        bot.inventory.getItemCount(14) == 4, str(bot.inventory.getItemCount(14)))
+
+    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    cek("place kedua -> stok 3", bot.inventory.getItemCount(14) == 3)
+
+    # Pukulan (Fist 18) BUKAN pemakaian item: stok tidak boleh turun.
+    bot._apply_tile_change_echo(Tank(type=3, value=18, int_x=10, int_y=10))
+    cek("punch tidak mengurangi stok", bot.inventory.getItemCount(14) == 3,
+        str(bot.inventory.getItemCount(14)))
+
+    # Wrench (32) juga bukan pemakaian item.
+    bot._apply_tile_change_echo(Tank(type=3, value=32, int_x=10, int_y=10))
+    cek("wrench tidak mengurangi stok", bot.inventory.getItemCount(14) == 3)
+
+    # Stok 0: tidak boleh jadi negatif walau echo tetap datang.
+    bot.inventory.kurangi(14, 3)
+    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    cek("stok 0 tidak jadi negatif", bot.inventory.getItemCount(14) == 0,
+        str(bot.inventory.getItemCount(14)))
+
+    # Item yang tidak ada di inventaris diabaikan.
+    bot._apply_tile_change_echo(Tank(type=3, value=999, int_x=1, int_y=1))
+    cek("item tak dikenal diabaikan", 999 not in bot.inventory.items)
+
+    # Place juga harus memperbarui PETA lokal: tanpa itu bot tidak tahu ada
+    # blok baru yang sudah dia pasang (dan tidak akan memecahnya lagi).
+    from lucifer.world import Tile, World
+    w = World()
+    w.name, w.width, w.height = "UJI", 5, 5
+    for y in range(5):
+        for x in range(5):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
+    bot.world = w
+    bot.inventory.tambah(14, 3)
+    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=2, int_y=3))
+    t = w.tile(2, 3)
+    cek("place mengisi peta lokal", t is not None and t.fg == 14,
+        str(t))
+    cek("bg dipertahankan", t is not None and t.bg == 14, str(t))
+
+
+def test_hit_counter() -> None:
+    bagian("7h. TileApplyDamage (type 8) sebagai hit counter")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    cek("hit_count awal 0", bot.hit_count(5, 5) == 0)
+    for _ in range(3):
+        bot._apply_damage(Tank(type=8, int_x=5, int_y=5, value=6))
+    cek("3 pukulan tercatat", bot.hit_count(5, 5) == 3, str(bot.hit_count(5, 5)))
+    bot._apply_damage(Tank(type=8, int_x=6, int_y=5, value=6))
+    cek("tile lain terpisah", bot.hit_count(5, 5) == 3 and bot.hit_count(6, 5) == 1)
+    bot.reset_hit(5, 5)
+    cek("reset_hit mengosongkan", bot.hit_count(5, 5) == 0)
+    # Tile negatif (posisi tak valid) diabaikan.
+    bot._apply_damage(Tank(type=8, int_x=-1, int_y=-1))
+    cek("tile negatif diabaikan", bot.hit_count(-1, -1) == 0)
+
+
 def test_modify_inventory() -> None:
     bagian("7f. ModifyItemInventory (type 13) update stok lokal")
     from lucifer.account import Account
@@ -1232,6 +1308,7 @@ def main() -> int:
                test_status_gems_level, test_tile_update_koordinat,
                test_proxypool_kredensial_unik, test_malady_dari_dialog,
                test_modify_inventory,
+               test_echo_place_kurangi_inventory, test_hit_counter,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

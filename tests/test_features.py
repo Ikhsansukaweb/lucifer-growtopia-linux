@@ -226,7 +226,44 @@ cek("taruh SETELAH pecah", _j9[-1][0] == "place", str(_j9))
 cek("taruh di tile yang sama", _j9[-1][:3] == ("place", 1, 2), str(_j9[-1]))
 cek("taruh dilaporkan", h9["ditaruh"] == 1, str(h9))
 
-# Kalau server TIDAK pernah mengonfirmasi, place tidak boleh dikirim.
+# Konfirmasi pecah memakai `TileApplyDamage` (bukan drop: banyak blok tidak
+# menjatuhkan apa pun). Blok pecah saat jumlah ack mencapai block_health/6.
+b17 = bot_kosong()
+b17.world = dunia_contoh()
+b17.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b17.status = "online"
+b17.world.tile(1, 2).fg = 2
+af17 = b17.fitur.autofarm
+af17.block_id, af17.block_mode = 2, "manual"
+af17.target_tiles = [(1, 2)]
+af17.collect, af17.punch_delay = False, 1
+b17.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+_h17 = []
+b17.place = lambda x, y, i: True
+
+
+def _hit17(x, y):
+    _h17.append(1)
+    # Server membalas ack HANYA selama blok masih ada. Setelah 2 pukulan
+    # blok pecah, jadi pukulan berikutnya tidak dibalas (perilaku nyata
+    # dari jurnal paket: Dirt pecah di ack ke-2).
+    if len(_h17) <= 2:
+        b17._apply_damage(type("T", (), {"int_x": x, "int_y": y, "value": 6})())
+    return True
+
+
+b17.hit = _hit17
+h17 = af17.satu_siklus()
+# Blok pecah = ack berhenti bertambah. Server hanya membalas ack untuk
+# pukulan yang benar-benar diterima, jadi hitungan ack tak bisa dipatok.
+cek("ack berhenti -> berhenti memukul (<=6)", len(_h17) <= 6, f"{len(_h17)} pukulan")
+cek("ack damage -> dipecah 1", h17["dipecah"] == 1, str(h17))
+cek("ack damage -> ditaruh 1", h17["ditaruh"] == 1, str(h17))
+
+# Server TIDAK mengirim satu pun `TileApplyDamage` -> tile dianggap SUDAH
+# KOSONG di server (peta lokal tertinggal). Ini bukti dari jurnal paket:
+# 200+ punch ke (48,23) menghasilkan nol type 8, sementara punch ke (49,22)
+# langsung dibalas. Tanpa aturan ini bot memukul selamanya.
 b10 = bot_kosong()
 b10.world = dunia_contoh()
 b10.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
@@ -241,9 +278,149 @@ _j10 = []
 b10.hit = lambda x, y: (_j10.append("hit"), True)[1]
 b10.place = lambda x, y, i: (_j10.append("place"), True)[1]
 h10 = af10.satu_siklus()
-cek("blok tak pecah -> tidak ada place", "place" not in _j10, str(_j10))
-cek("blok tak pecah -> dipecah 0", h10["dipecah"] == 0, str(h10))
-cek("pukulan dibatasi (tidak spam selamanya)", len(_j10) <= 12, str(len(_j10)))
+cek("nol ack -> tile dianggap kosong", h10["dipecah"] == 1, str(h10))
+cek("nol ack -> berhenti memukul (<=6)", len([a for a in _j10 if a == "hit"]) <= 6,
+    str(len([a for a in _j10 if a == "hit"])))
+cek("nol ack -> place dijalankan", "place" in _j10, str(_j10))
+
+# Server MENGIRIM ack tapi tile tidak pernah kosong: harus berhenti di batas,
+# bukan memukul selamanya.
+b10b = bot_kosong()
+b10b.world = dunia_contoh()
+b10b.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b10b.status = "online"
+b10b.world.tile(1, 2).fg = 2
+af10b = b10b.fitur.autofarm
+af10b.block_id, af10b.block_mode = 2, "manual"
+af10b.target_tiles = [(1, 2)]
+af10b.collect, af10b.punch_delay = False, 1
+b10b.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+_h10b = []
+b10b.hit = lambda x, y: (_h10b.append(1), True)[1]
+b10b.place = lambda x, y, i: True
+af10b.satu_siklus()
+cek("ack tapi tak pernah kosong -> dibatasi", len(_h10b) <= 14, str(len(_h10b)))
+
+print("== AutoFarm: jumlah pukulan = block_health / 6 ==")
+# items.dat mengalikan hit-count x6 saat menyimpan; pemakaian membaginya lagi
+# (Gurotopia items.cpp:102). Dirt block_health=18 -> 3 pukulan, bukan 18.
+b11 = bot_kosong()
+b11.world = dunia_contoh()
+b11.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b11.status = "online"
+b11.world.tile(1, 2).fg = 2
+af11 = b11.fitur.autofarm
+af11.block_id, af11.block_mode = 2, "manual"
+af11.target_tiles = [(1, 2)]
+af11.collect, af11.punch_delay = False, 1
+_h = []
+b11.inventory.items[2] = type("I", (), {"id": 2, "count": 9, "isActive": False})()
+
+
+def _hit11(x, y):
+    _h.append(1)
+    # Server baru menghapus blok setelah pukulan ke-3 (block_health 18 / 6).
+    if len(_h) >= 3:
+        t = b11.world.tile(x, y)
+        t.fg, t.flags, t.extra_type = 0, 0, 0
+    return True
+
+
+b11.hit = _hit11
+b11.place = lambda x, y, i: True
+af11.satu_siklus()
+cek("Dirt pecah dalam 3 pukulan", len(_h) == 3, f"{len(_h)} pukulan")
+
+# Tanpa items_db: fallback 3 pukulan, bukan 10+.
+b12 = bot_kosong()
+b12.world = dunia_contoh()
+b12.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b12.status = "online"
+b12.world.tile(1, 2).fg = 2
+af12 = b12.fitur.autofarm
+af12.block_id, af12.block_mode = 2, "manual"
+af12.target_tiles = [(1, 2)]
+af12.collect, af12.punch_delay, af12.punch_count = False, 1, 10
+_h2 = []
+b12.hit = lambda x, y: (_h2.append(1), True)[1]
+b12.place = lambda x, y, i: True
+af12.satu_siklus()
+cek("tanpa items.dat: batas tetap kecil", len(_h2) <= 14, f"{len(_h2)} pukulan")
+
+print("== AutoFarm: urutan kiri ke kanan ==")
+b13 = bot_kosong()
+w13 = World(); w13.name = "U13"; w13.width = w13.height = 6
+for _y in range(6):
+    for _x in range(6):
+        w13.tiles.append(Tile(x=_x, y=_y, fg=0, bg=BG_TANAH))
+for _x in range(2, 5):
+    w13.tile(_x, 2).fg = 2
+b13.world = w13
+b13.local = Player(netid=1, name="uji", posx=3 * 32.0, posy=2 * 32.0)
+b13.status = "online"
+af13 = b13.fitur.autofarm
+af13.block_mode, af13.target_tiles = "auto", []
+urut = [(t.x, t.y) for t in af13._urut_dekat(af13.siap_pecah())]
+cek("urut kiri->kanan", urut == [(2, 2), (3, 2), (4, 2)], str(urut))
+
+print("== AutoFarm: sasaran jauh harus didekati, bukan dipukul sia-sia ==")
+b14 = bot_kosong()
+w14 = World(); w14.name = "U14"; w14.width = w14.height = 40
+for _y in range(40):
+    for _x in range(40):
+        w14.tiles.append(Tile(x=_x, y=_y, fg=0, bg=BG_TANAH))
+w14.tile(30, 30).fg = 2      # 21 tile dari pemain, jauh di luar jangkauan
+b14.world = w14
+b14.local = Player(netid=1, name="uji", posx=9 * 32.0, posy=9 * 32.0)
+b14.status = "online"
+af14 = b14.fitur.autofarm
+af14.block_id, af14.block_mode = 2, "manual"
+af14.target_tiles = [(30, 30)]
+_pukul14 = []
+b14.hit = lambda x, y: (_pukul14.append((x, y)), True)[1]
+b14.place = lambda x, y, i: True
+JALAN = []
+b14.moveTo = lambda dx, dy: (JALAN.append((dx, dy)), True)[1]
+
+cek("tile jauh bukan sasaran siap_pecah", af14.siap_pecah() == [],
+    str([(t.x, t.y) for t in af14.siap_pecah()]))
+cek("terdeteksi sebagai sasaran jauh", len(af14._sasaran_jauh()) == 1)
+af14.pecah()
+cek("tidak memukul tile di luar jangkauan", _pukul14 == [], str(_pukul14))
+cek("bot jalan mendekat", len(JALAN) > 0, str(JALAN))
+
+print("== AutoFarm: lahan kosong dari awal tetap bisa ditaruh ==")
+# Kasus nyata: target tile sudah kosong (fg=0,bg=0) sebelum autofarm mulai.
+# `_baru_kosong` hanya terisi setelah ada blok yang pecah, jadi tanpa
+# `target_tiles` sebagai sumber, bot menunggu selamanya dan tidak pernah place.
+b15 = bot_kosong()
+b15.world = dunia_contoh()
+b15.local = Player(netid=1, name="uji", posx=3 * 32.0, posy=3 * 32.0)
+b15.status = "online"
+af15 = b15.fitur.autofarm
+af15.block_id, af15.block_mode = 2, "manual"
+af15.target_tiles = [(3, 3)]
+af15.collect, af15.punch_delay, af15.place_delay = False, 1, 1
+b15.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+_taruh15 = []
+b15.hit = lambda x, y: True
+b15.place = lambda x, y, i: (_taruh15.append((x, y, i)), True)[1]
+h15 = af15.satu_siklus()
+cek("tile kosong dari awal tetap ditaruh", _taruh15 == [(3, 3, 2)], str(_taruh15))
+cek("ditaruh_total naik", h15["ditaruh"] == 1, str(h15))
+
+# block_mode None (belum diset) harus diperlakukan seperti "auto", bukan
+# diam-diam tidak mencocokkan apa pun.
+b16 = bot_kosong()
+b16.world = dunia_contoh()
+b16.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+af16 = b16.fitur.autofarm
+af16.block_mode = None
+af16.target_tiles = [(1, 2)]
+b16.world.tile(1, 2).fg = 2
+cek("block_mode None tidak memblokir sasaran",
+    len(af16.siap_pecah()) == 1,
+    str([(t.x, t.y) for t in af16.siap_pecah()]))
 
 print("== AutoFarm beda dengan Automation ==")
 cek("autofarm punya pecah+taruh",
