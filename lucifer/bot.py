@@ -933,6 +933,13 @@ class Bot:
             self._dump("map", ext)
             self.world = parse_world(ext, self.items_db)
             self.players.clear()
+            # Objek yang SUDAH ADA di dunia ikut dikirim di SendMapData
+            # (uid + item id). Masukkan ke peta uid->item: paket pickup hanya
+            # membawa uid, jadi tanpa ini item id objek lama tidak diketahui.
+            self._uid_item.clear()
+            for d in self.world.dropped:
+                if d.uid:
+                    self._uid_item[int(d.uid)] = int(d.item_id)
             self._profil_diminta = False
             self._emit("world_loaded", self.world)
             # Level hanya ada di dialog profil; minta sekali per world setelah

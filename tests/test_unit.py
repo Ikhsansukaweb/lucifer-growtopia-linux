@@ -1187,6 +1187,38 @@ def test_uid_ke_item_id_untuk_pickup() -> None:
         bool(log) and "Dirt Seed" in log[-1], str(log[-1:]))
 
 
+def test_uid_item_dari_sendmapdata() -> None:
+    bagian("7n. SendMapData mengisi peta uid->item (objek lama)")
+    from pathlib import Path
+
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.items import ItemDatabase
+    from lucifer.protocol import Tank
+    from lucifer.world import DroppedItem
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    items = Path(__file__).resolve().parent.parent / "data" / "items.dat"
+    if items.exists():
+        bot.items_db = ItemDatabase.from_file(items)
+
+    # Objek yang sudah ada di dunia datang lewat SendMapData (uid + item id).
+    bot._uid_item.clear()
+    bot.world.dropped = [DroppedItem(item_id=3, x=1473.0, y=815.0,
+                                     count=1, uid=1)]
+    for d in bot.world.dropped:
+        bot._uid_item[int(d.uid)] = int(d.item_id)
+    cek("peta terisi dari SendMapData", bot._uid_item.get(1) == 3,
+        str(bot._uid_item))
+
+    # Pickup hanya membawa uid; item id diambil dari peta.
+    bot._apply_item_change(Tank(type=14, net_id=1, value=1), b"")
+    log = [p["isi"] for p in bot.packet_log if "DIAMBIL" in p["isi"]]
+    cek("pickup memakai peta SendMapData",
+        bool(log) and "item_id=3" in log[-1], str(log[-1:]))
+
+
 def test_arti_value_item_change_object() -> None:
     bagian("7l. type 14: arti `value` beda menurut netid")
     from lucifer import nama as N
@@ -1490,6 +1522,7 @@ def main() -> int:
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
+               test_uid_item_dari_sendmapdata,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):
