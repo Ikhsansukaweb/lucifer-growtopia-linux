@@ -1187,6 +1187,42 @@ def test_uid_ke_item_id_untuk_pickup() -> None:
         bool(log) and "Dirt Seed" in log[-1], str(log[-1:]))
 
 
+def test_autocollect_uid_dipakai_ulang() -> None:
+    bagian("7o. AutoCollect: uid dipakai ulang tidak diblokir selamanya")
+    import time
+
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.local = Player(netid=1, name="uji", posx=1000.0, posy=1000.0)
+    bot._running = True
+    bot.auto_collect = True
+    bot.auto_collect_radius = 6
+    kirim = []
+    bot.send_raw = lambda pkt, ext=b"": (kirim.append(pkt), True)[1]  # type: ignore[method-assign]
+
+    # Tiga percobaan untuk uid=1 (batas).
+    for _ in range(3):
+        bot._apply_item_change(
+            Tank(type=14, net_id=0xFFFFFFFF, target_net_id=1, value=2,
+                 float_variable=1.0, vector_x=1000.0, vector_y=1000.0), b"")
+    time.sleep(0.15)
+    cek("3 percobaan terkirim", len(kirim) == 3, str(len(kirim)))
+
+    # Server memakai ulang uid=1 untuk objek baru: harus bisa diambil lagi.
+    kirim.clear()
+    bot.world.dropped.clear()
+    bot._apply_item_change(
+        Tank(type=14, net_id=0xFFFFFFFF, target_net_id=1, value=3,
+             float_variable=1.0, vector_x=1000.0, vector_y=1000.0), b"")
+    time.sleep(0.15)
+    cek("uid dipakai ulang -> diambil lagi", len(kirim) == 1,
+        str([(p.type, p.value) for p in kirim]))
+
+
 def test_uid_item_dari_sendmapdata() -> None:
     bagian("7n. SendMapData mengisi peta uid->item (objek lama)")
     from pathlib import Path
@@ -1523,6 +1559,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,
+               test_autocollect_uid_dipakai_ulang,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

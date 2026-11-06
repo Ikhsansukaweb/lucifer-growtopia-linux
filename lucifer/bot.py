@@ -1480,7 +1480,15 @@ class Bot:
         """
         if not self._running or not self.local:
             return
+        pilih = getattr(getattr(self, "fitur", None), "autocollect", None)
+        filter_item = getattr(pilih, "item_id", 0) if pilih is not None else 0
+        blokir = set(getattr(pilih, "item_disable", []) or []) if pilih is not None else set()
         for d in list(self.world.dropped):
+            # Filter item dari fitur AutoCollect ikut berlaku di jalur otomatis.
+            if filter_item and d.item_id != filter_item:
+                continue
+            if d.item_id in blokir:
+                continue
             if self._boleh_ambil(d.x, d.y):
                 self._auto_ambil(d.uid, d.x, d.y)
 
@@ -1503,6 +1511,17 @@ class Bot:
         if not self.local:
             return False
         pilih = getattr(getattr(self, "fitur", None), "autocollect", None)
+
+        # Kalau fitur AutoCollect AKTIF, pakai pengaturannya — jangan
+        # `auto_collect` mentah. Dua jalur (otomatis vs fitur) harus memakai
+        # aturan yang sama, kalau tidak drop pemain lain diabaikan.
+        if pilih is not None and getattr(pilih, "_s", None) is not None \
+                and getattr(pilih._s, "aktif", False):
+            tiles = getattr(pilih, "tiles", None) or []
+            if tiles:
+                return (int(x // 32), int(y // 32)) in set(map(tuple, tiles))
+            return self._in_range_px(x, y, getattr(pilih, "radius", 3))
+
         tiles = getattr(pilih, "tiles", None) if pilih is not None else None
         if tiles:
             return (int(x // 32), int(y // 32)) in set(map(tuple, tiles))
@@ -1526,12 +1545,16 @@ class Bot:
             return
         uid_i = int(uid)
         now = time.time()
+        # Batas percobaan per uid, TAPI hanya berlaku untuk objek yang sama.
+        # uid dipakai ulang server untuk objek baru setelah yang lama hilang,
+        # jadi hitungan harus di-reset saat objek dengan uid itu muncul lagi
+        # (lihat `_apply_item_change`: `_ambil_n.pop(uid)`).
         if self._ambil_n.get(uid_i, 0) >= 3:
             return
         if now < self._ambil_ts.get(uid_i, 0.0):
             return
         self._ambil_n[uid_i] = self._ambil_n.get(uid_i, 0) + 1
-        self._ambil_ts[uid_i] = now + 2.0
+        self._ambil_ts[uid_i] = now + 1.0
 
         def kerja() -> None:
             time.sleep(0.03)   # deltaX: sleep(30)
@@ -1621,6 +1644,10 @@ class Bot:
                         DroppedItem(item_id=item_id, x=x, y=y,
                                     count=jumlah, uid=uid_asli))
                     self._emit("dropped", uid_asli)
+                # uid boleh dipakai ulang untuk objek baru: bersihkan batas
+                # percobaan lama supaya objek baru tetap bisa diambil.
+                self._ambil_n.pop(int(uid_asli), None)
+                self._ambil_ts.pop(int(uid_asli), None)
                 # Ingat pasangan uid -> item id (dipakai saat pickup, karena
                 # paket pickup hanya membawa uid).
                 self._uid_item[int(uid_asli)] = int(item_id)
