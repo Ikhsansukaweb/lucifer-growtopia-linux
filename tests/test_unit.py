@@ -1033,6 +1033,22 @@ def test_status_gems_level() -> None:
     bot._handle_variant(vl.serialize(), _Tank())
     cek("gems dari OnSetBux", bot.gem_count == 4321, str(bot.gem_count))
 
+    # Jalur NYATA: OnDialogRequest dengan markup di argumen index 1
+    # (bentuk asli retail, terbukti dari jurnal paket:
+    #  `fn=OnDialogRequest arg1='embed_data|netID|1\nadd_popup_name|WrenchMenu|...`).
+    dialog = ("embed_data|netID|1\n"
+              "add_popup_name|WrenchMenu|\n"
+              "set_default_color|`o\n"
+              "add_player_info|Isan|42|700|1800|\n"
+              "add_button|ok|OK|")
+    vd = VariantList()
+    vd.append(Variant.from_string("OnDialogRequest"))
+    vd.append(Variant.from_string(dialog))
+    bot.level = 0
+    bot._handle_variant(vd.serialize(), _Tank())
+    cek("level dari paket OnDialogRequest asli", bot.level == 42, str(bot.level))
+    cek("dialog terakhir tersimpan", "add_player_info" in bot.dialog_terakhir)
+
     # Dialog profil: `add_player_info|<nama>|<level>|<xp>|<xp_next>|`
     teks = ("add_popup_name|WrenchMenu\n"
             "add_player_info|Isan|37|1200|2500|\n"

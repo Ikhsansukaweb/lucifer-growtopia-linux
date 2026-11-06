@@ -1293,6 +1293,14 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": True, "label": bot.label,
                             "chat": bot.chat.terakhir(200)})
+        elif path == "/api/dialog":
+            # Markup dialog terakhir: diagnosis format `add_player_info` (level).
+            bot = self._bot(self._query().get("label", ""))
+            if bot is None:
+                self._json({"ok": False, "error": "belum ada bot"})
+            else:
+                self._json({"ok": True, "label": bot.label,
+                            "dialog": bot.dialog_terakhir})
         elif path == "/api/logs":
             self._json({"logs": self.runner.logs() if self.runner else []})
         elif path == "/api/packets":

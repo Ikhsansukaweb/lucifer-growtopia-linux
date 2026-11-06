@@ -341,6 +341,8 @@ class Bot:
         self.level = 0
         # Level hanya dikirim server di dialog profil; minta sekali per sesi.
         self._profil_diminta = False
+        # Markup dialog terakhir (diagnosis format server).
+        self.dialog_terakhir = ""
         self.playtime = 0
         self.captcha_status = "no_captcha"
         self.captcha_url = ""
@@ -902,6 +904,11 @@ class Bot:
             self.players.clear()
             self._profil_diminta = False
             self._emit("world_loaded", self.world)
+            # Level hanya ada di dialog profil; minta sekali per world setelah
+            # data dunia siap (urutan SendMapData/SetCharacterState tak dijamin).
+            if self.local is not None and self.world.tiles:
+                self._profil_diminta = True
+                self.minta_profil()
         elif t == G.SendInventoryState:
             self._dump("inv", ext)
             self.inventory.parse(ext)
@@ -934,10 +941,18 @@ class Bot:
         fn = vl.func_name()
         self._emit("variant", (vl, tank.net_id))
         if fn == "OnDialogRequest":
-            teks = vl.get(2).as_string() if vl.get(2) else ""
+            # Markup dialog ada di argumen PERTAMA (index 1), bukan index 2.
+            # Jangan asal index: gabungkan semua argumen string supaya
+            # `add_player_info` tetap ketemu walau server menaruh di posisi lain.
+            teks = "\n".join(
+                v.as_string() for v in vl.variants[1:]
+                if v.kind == P.VARIANT_STRING and v.value
+            )
             # `add_player_info|<nama>|<level>|<xp>|<xp_next>|` hanya muncul di
             # dialog hasil wrench diri sendiri. Ini satu-satunya sumber level
             # yang dikirim server retail (bukan paket status).
+            self.dialog_terakhir = teks
+            self._dump("dialog", teks.encode("utf-8", "replace"))
             self._baca_level_dialog(teks)
             self._emit("dialog", teks)
         elif fn == "OnSetBux":
@@ -1408,7 +1423,7 @@ class Bot:
         """
         hasil = False
         for baris in teks.split("\n"):
-            if baris.startswith("add_player_info|"):
+            if baris.startswith(("add_player_info|", "add_player_info_small|")):
                 kolom = baris.split("|")
                 if len(kolom) >= 3:
                     hasil = self._coba_level(kolom[2]) or hasil
