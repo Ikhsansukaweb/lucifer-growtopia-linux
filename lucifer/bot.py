@@ -394,6 +394,8 @@ class Bot:
         self._sapu_ts = 0.0
         # Batas percobaan collect per uid: sebagian objek memang tidak pernah
         # dibalas server. Tanpa ini sapuan berkala mengirim type 11 selamanya.
+        # Tile terakhir yang dituju untuk mengambil item tanpa uid.
+        self._jalan_ts: dict[tuple[int, int], float] = {}
         self._ambil_n: dict[int, int] = {}
         self._ambil_ts: dict[int, float] = {}
 
@@ -1494,6 +1496,34 @@ class Bot:
             if self._boleh_ambil(d.x, d.y):
                 self._auto_ambil(d.uid, d.x, d.y)
 
+    def _jalan_ke_item(self, x: float, y: float) -> None:
+        """Ambil objek tanpa uid dengan berjalan ke posisinya.
+
+        Server hanya mau `ItemActivateObjectRequest` untuk uid yang ia kenal.
+        Untuk objek yang uid-nya tidak dikirim (semua drop baru: uid=-1),
+        menimpa posisinya membuat server sendiri yang memindahkan item ke
+        inventory — cara yang sama dipakai pemain manusia.
+        """
+        if not self.local or not self._running:
+            return
+        key = (int(x // 32), int(y // 32))
+        if key in self._jalan_ts and time.time() < self._jalan_ts[key]:
+            return
+        self._jalan_ts[key] = time.time() + 2.0
+
+        def kerja() -> None:
+            try:
+                if abs(self.local.posx - x) <= 8 and abs(self.local.posy - y) <= 8:
+                    return
+                self.moveTile(key[0], key[1])
+                self.catat_paket("in", 0,
+                                 f"JALAN ke item tile={key} (uid tidak dikirim "
+                                 f"server) pos=({x:.0f},{y:.0f})")
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=kerja, name=f"jalan-item-{key}", daemon=True).start()
+
     def _boleh_ambil(self, x: float, y: float) -> bool:
         """Apakah objek ini boleh diambil otomatis?
 
@@ -1546,6 +1576,15 @@ class Bot:
         if not self._boleh_ambil(x, y):
             return
         uid_i = int(uid)
+
+        # uid == 0: server tidak memberi uid, jadi type 11 PASTI ditolak
+        # (dibuktikan: uid karangan 2 tidak pernah dibalas). Satu-satunya cara
+        # yang dipakai pemain manusia: berjalan ke posisi item. Growtopia
+        # mengambil objek otomatis saat pemain menimpanya.
+        if uid_i == 0:
+            self._jalan_ke_item(x, y)
+            return
+
         now = time.time()
         # Batas percobaan per uid, TAPI hanya berlaku untuk objek yang sama.
         # uid dipakai ulang server untuk objek baru setelah yang lama hilang,
@@ -1623,10 +1662,22 @@ class Bot:
                 # dari SendMapData, lalu naik satu tiap objek baru
                 # (Gurotopia: `++world.last_object_uid`). Kalau server
                 # kebetulan memberi uid (ada 1 kasus: uid=17), pakai itu.
+                # UID objek. Bukti dari decode paket:
+                #
+                #   drop baru  : target_net_id = -1 (server TIDAK memberi uid)
+                #   pickup     : value = uid  (mis. 15, 40)
+                #
+                # uid TIDAK BISA dikarang: percobaan memakai `last_uid + 1`
+                # menghasilkan uid=2 untuk objek yang uid aslinya 15, dan
+                # server menolak setiap `ItemActivateObjectRequest` untuk uid
+                # yang salah (tidak ada balasan sama sekali).
+                #
+                # Jadi objek tanpa uid tidak bisa diambil lewat type 11.
+                # Ditandai uid=0 dan diambil dengan cara lain (menimpa item
+                # dengan berjalan ke posisinya, seperti pemain manusia).
                 uid_asli = int(tank.target_net_id)
                 if uid_asli <= 0 or uid_asli >= 0x7FFFFFFF:
-                    self.world.last_uid = int(self.world.last_uid) + 1
-                    uid_asli = int(self.world.last_uid)
+                    uid_asli = 0
                 elif uid_asli > int(self.world.last_uid):
                     self.world.last_uid = uid_asli
 

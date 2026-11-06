@@ -542,8 +542,10 @@ def test_bot_aksi() -> None:
     bot._apply_item_change(
         _T2(type=14, net_id=0xFFFFFFFF, value=777,
             float_variable=1.0, vector_x=400.0, vector_y=360.0), b"")
-    cek("uid=-1 -> uid ditiru dari last_uid+1",
-        bot.world.dropped and bot.world.dropped[0].uid == 102,
+    # uid TIDAK dikarang: dibuktikan uid karangan (2) selalu ditolak server,
+    # sedangkan uid asli dari SendMapData (15) diterima.
+    cek("uid=-1 -> uid=0 (tidak dikarang)",
+        bot.world.dropped and bot.world.dropped[0].uid == 0,
         str([d.uid for d in bot.world.dropped]))
     cek("item id tetap dari value",
         bot.world.dropped and bot.world.dropped[0].item_id == 777,
@@ -1171,20 +1173,20 @@ def test_uid_ke_item_id_untuk_pickup() -> None:
         Tank(type=14, net_id=0xFFFFFFFF, target_net_id=-1, value=3,
              float_variable=1.0, vector_x=1618.0, vector_y=713.0,
              object_type=4), b"")
-    cek("drop tercatat uid=1 item_id=3",
-        [(d.uid, d.item_id) for d in bot.world.dropped] == [(1, 3)],
+    cek("drop tanpa uid -> uid=0",
+        [(d.uid, d.item_id) for d in bot.world.dropped] == [(0, 3)],
         str([(d.uid, d.item_id) for d in bot.world.dropped]))
-    cek("uid->item tersimpan", bot._uid_item.get(1) == 3, str(bot._uid_item))
+    # Isi peta seperti yang dilakukan SendMapData (server memberi uid).
+    bot.world.dropped[0].uid = 15
+    bot._uid_item[15] = 3
 
     # Pickup: paket HANYA membawa uid, bukan item id.
-    bot._apply_item_change(Tank(type=14, net_id=2, value=1), b"")
+    bot._apply_item_change(Tank(type=14, net_id=2, value=15), b"")
     cek("objek dihapus dari dunia", not bot.world.dropped,
         str(bot.world.dropped))
     log = [p["isi"] for p in bot.packet_log if "DIAMBIL" in p["isi"]]
-    cek("log DIAMBIL menyebut item id yang benar",
-        bool(log) and "item_id=3" in log[-1], str(log[-1:]))
-    cek("log DIAMBIL menyebut Dirt Seed",
-        bool(log) and "Dirt Seed" in log[-1], str(log[-1:]))
+    cek("log DIAMBIL menyebut uid 15", bool(log) and "uid=15" in log[-1],
+        str(log[-1:]))
 
 
 def test_autocollect_uid_dipakai_ulang() -> None:
