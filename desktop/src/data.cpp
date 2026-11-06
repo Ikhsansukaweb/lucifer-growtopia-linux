@@ -194,6 +194,7 @@ void App::refresh_bots() {
                 GtkTreeIter it_bot = baris(store_bots_, {
                     label, nama,
                     jint(b, "level") ? std::to_string(jint(b, "level")) : "-",
+                    jstr(b, "malady").empty() ? "—" : jstr(b, "malady"),
                     jint(b, "ping") ? std::to_string(jint(b, "ping")) + " ms" : "-",
                     status,
                     jstr(b, "proxy").empty() ? "—" : jstr(b, "proxy"),
@@ -201,7 +202,7 @@ void App::refresh_bots() {
                     pos.empty() ? "—" : pos,
                     std::to_string(jint(b, "gems")),
                 });
-                gtk_list_store_set(store_bots_, &it_bot, 9,
+                gtk_list_store_set(store_bots_, &it_bot, 10,
                                    dipilih_.count(label) ? TRUE : FALSE, -1);
             }
         }
@@ -354,11 +355,13 @@ void App::refresh_detail() {
                       "label      : %s\nnama       : %s\nstatus     : %s\n"
                       "ping       : %ld ms\nserver     : %s\ndunia      : %s (%s)\n"
                       "pemain     : %ld\ntile       : %ld\nlevel      : %ld\n"
-                      "gems       : %ld\nproxy      : %s\nwaktu aktif: %s",
+                      "malady     : %s\ngems       : %ld\nproxy      : %s\n"
+                      "waktu aktif: %s",
                       aktif_.c_str(), nama.c_str(), status.c_str(),
                       jint(st, "ping"), jstr(st, "server").c_str(),
                       dunia.c_str(), jstr(st, "world_size").c_str(),
                       jint(st, "players"), jint(st, "tiles"), jint(st, "level"),
+                      jstr(st, "malady").empty() ? "—" : jstr(st, "malady").c_str(),
                       jint(st, "gems"),
                       jstr(st, "proxy").empty() ? "—" : jstr(st, "proxy").c_str(),
                       jstr(st, "active_time").c_str());
@@ -696,13 +699,13 @@ void App::on_toggle_bot(GtkCellRendererToggle *, gchar *path, gpointer self) {
         return;
     gchar *label = nullptr;
     gboolean aktif = FALSE;
-    gtk_tree_model_get(GTK_TREE_MODEL(a->store_bots_), &it, 0, &label, 9, &aktif, -1);
+    gtk_tree_model_get(GTK_TREE_MODEL(a->store_bots_), &it, 0, &label, 10, &aktif, -1);
     if (label) {
         if (aktif) a->dipilih_.erase(label);
         else       a->dipilih_.insert(label);
         g_free(label);
     }
-    gtk_list_store_set(a->store_bots_, &it, 9, !aktif, -1);
+    gtk_list_store_set(a->store_bots_, &it, 10, !aktif, -1);
 }
 std::string App::selected_script() { return pilih_teks(view_scripts_, 0); }
 std::string App::proxy_host_port() {
@@ -1021,7 +1024,7 @@ void App::on_pilih_semua(GtkButton *, gpointer self) {
             if (semua) a->dipilih_.erase(l);
             else       a->dipilih_.insert(l);
         }
-        gtk_list_store_set(a->store_bots_, &it, 9, !semua, -1);
+        gtk_list_store_set(a->store_bots_, &it, 10, !semua, -1);
         g_free(l);
     }
 }

@@ -148,6 +148,103 @@ cek("blok terpasang lagi", b6.world.tile(1, 2).fg == 2)
 cek("siklus melaporkan hasil", hasil6["dipecah"] == 1 and hasil6["ditaruh"] == 1,
     str(hasil6))
 
+print("== Autofarm tidak berjalan sendiri (bug White Door) ==")
+import ast as _ast
+
+_tree = _ast.parse(Path(__file__).resolve().parent.parent.joinpath("lucifer/features.py").read_text())
+for _n in _ast.walk(_tree):
+    if isinstance(_n, _ast.FunctionDef) and _n.name == "dekati":
+        _calls = [_c.func.attr for _c in _ast.walk(_n)
+                  if isinstance(_c, _ast.Call) and isinstance(_c.func, _ast.Attribute)]
+        cek("dekati() tidak menggerakkan bot", not any(
+            m in ("findPath", "moveTo", "moveTile") for m in _calls), str(_calls))
+
+b7 = bot_kosong()
+w7 = World(); w7.name = "U7"; w7.width = w7.height = 30
+for _y in range(30):
+    for _x in range(30):
+        w7.tiles.append(Tile(x=_x, y=_y, fg=0, bg=BG_TANAH))
+for _x in range(30):
+    w7.tile(_x, 5).fg = 2          # baris blok jauh dari pemain
+w7.tile(12, 12).fg = 2             # blok tepat di dekat pemain
+b7.world = w7
+b7.local = Player(netid=1, name="uji", posx=12 * 32.0, posy=12 * 32.0)
+af7 = b7.fitur.autofarm
+af7.block_mode, af7.target_tiles = "auto", []
+cek("mode auto hanya menyasar jangkauan",
+    [(t.x, t.y) for t in af7.siap_pecah()] == [(12, 12)],
+    str([(t.x, t.y) for t in af7.siap_pecah()]))
+cek("blok jauh tidak disentuh", len(af7.siap_pecah()) < sum(1 for t in w7.tiles if t.fg == 2))
+
+print("== Autocollect: tile menang atas radius di jalur otomatis ==")
+b8 = bot_kosong()
+b8.world = dunia_contoh()
+b8.local = Player(netid=1, name="uji", posx=0.0, posy=0.0)
+b8.auto_collect, b8.auto_collect_radius = True, 5
+b8.fitur.autocollect.tiles = [(4, 4)]
+cek("tile terpilih diambil", b8._boleh_ambil(4 * 32 + 16, 4 * 32 + 16))
+cek("radius diabaikan saat tile diset", not b8._boleh_ambil(1 * 32 + 16, 1 * 32 + 16))
+b8.fitur.autocollect.tiles = []
+cek("tanpa tile -> radius dipakai lagi", b8._boleh_ambil(1 * 32 + 16, 1 * 32 + 16))
+
+print("== AutoFarm tunggu blok BENAR-BENAR pecah sebelum taruh ==")
+b9 = bot_kosong()
+b9.world = dunia_contoh()
+b9.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b9.status = "online"
+blk9 = b9.world.tile(1, 2)
+blk9.fg, blk9.extra_type = 2, 0
+af9 = b9.fitur.autofarm
+af9.block_id, af9.block_mode = 2, "manual"
+af9.target_tiles = [(1, 2)]
+af9.collect, af9.punch_delay = False, 1
+b9.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+_j9 = []
+
+
+def _hit_pecah(x, y):
+    _j9.append(("hit", x, y))
+    # Server baru mengonfirmasi blok hilang setelah pukulan ke-3.
+    if sum(1 for a in _j9 if a[0] == "hit") >= 3:
+        t = b9.world.tile(x, y)
+        t.fg, t.flags, t.extra_type = 0, 0, 0
+    return True
+
+
+def _place9(x, y, i):
+    _j9.append(("place", x, y, i))
+    b9.world.tile(x, y).fg = i
+    return True
+
+
+b9.hit, b9.place = _hit_pecah, _place9
+h9 = af9.satu_siklus()
+cek("hit diulang sampai blok pecah (3x)", [a[0] for a in _j9].count("hit") == 3,
+    str(_j9))
+cek("pecah dilaporkan", h9["dipecah"] == 1, str(h9))
+cek("taruh SETELAH pecah", _j9[-1][0] == "place", str(_j9))
+cek("taruh di tile yang sama", _j9[-1][:3] == ("place", 1, 2), str(_j9[-1]))
+cek("taruh dilaporkan", h9["ditaruh"] == 1, str(h9))
+
+# Kalau server TIDAK pernah mengonfirmasi, place tidak boleh dikirim.
+b10 = bot_kosong()
+b10.world = dunia_contoh()
+b10.local = Player(netid=1, name="uji", posx=1 * 32.0, posy=2 * 32.0)
+b10.status = "online"
+b10.world.tile(1, 2).fg = 2
+af10 = b10.fitur.autofarm
+af10.block_id, af10.block_mode = 2, "manual"
+af10.target_tiles = [(1, 2)]
+af10.collect, af10.punch_delay, af10.punch_count = False, 1, 4
+b10.inventory.items[2] = type("I", (), {"id": 2, "count": 5, "isActive": False})()
+_j10 = []
+b10.hit = lambda x, y: (_j10.append("hit"), True)[1]
+b10.place = lambda x, y, i: (_j10.append("place"), True)[1]
+h10 = af10.satu_siklus()
+cek("blok tak pecah -> tidak ada place", "place" not in _j10, str(_j10))
+cek("blok tak pecah -> dipecah 0", h10["dipecah"] == 0, str(h10))
+cek("pukulan dibatasi (tidak spam selamanya)", len(_j10) <= 12, str(len(_j10)))
+
 print("== AutoFarm beda dengan Automation ==")
 cek("autofarm punya pecah+taruh",
     hasattr(af, "pecah") and hasattr(af, "taruh"))

@@ -1098,6 +1098,96 @@ def test_proxypool_kredensial_unik() -> None:
             hapus["dihapus"] == 5 and hapus["total"] == 0, str(hapus))
 
 
+def test_modify_inventory() -> None:
+    bagian("7f. ModifyItemInventory (type 13) update stok lokal")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.inventory.items.clear()
+    bot.inventory.tambah(2, 10)
+    cek("stok awal Dirt", bot.inventory.getItemCount(2) == 10,
+        str(bot.inventory.getItemCount(2)))
+
+    # BERKURANG: (jumlah << 16) | 13 -> byte2 = jumlah
+    bot._apply_modify_inventory(Tank(type=13, value=2, jump_count=3))
+    cek("Dirt berkurang 3", bot.inventory.getItemCount(2) == 7,
+        str(bot.inventory.getItemCount(2)))
+
+    # BERTAMBAH: (jumlah << 24) | 13 -> byte3 = jumlah
+    bot._apply_modify_inventory(Tank(type=13, value=2, animation_type=5))
+    cek("Dirt bertambah 5", bot.inventory.getItemCount(2) == 12,
+        str(bot.inventory.getItemCount(2)))
+
+    # Habis = item dibuang dari daftar (bukan sisa 0 atau negatif).
+    bot._apply_modify_inventory(Tank(type=13, value=2, jump_count=12))
+    cek("stok habis -> item hilang",
+        bot.inventory.getItemCount(2) == 0 and 2 not in bot.inventory.items,
+        str(bot.inventory.items))
+
+    # Item baru yang belum pernah ada.
+    bot._apply_modify_inventory(Tank(type=13, value=500, animation_type=4))
+    cek("item baru masuk inventaris", bot.inventory.getItemCount(500) == 4,
+        str(bot.inventory.getItemCount(500)))
+
+    # Gems (112) bukan item inventaris: harus diabaikan.
+    bot._apply_modify_inventory(Tank(type=13, value=112, animation_type=9))
+    cek("gems diabaikan", 112 not in bot.inventory.items)
+
+
+def test_malady_dari_dialog() -> None:
+    bagian("7e. Malady: parse dari dialog profil")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+
+    # Nama konstanta klien (MALADY_* / ILLNESS_*).
+    cek("MALADY_LUPUS -> Lupus",
+        bot._baca_malady_dialog("add_textbox|MALADY_LUPUS|") and bot.malady == "Lupus",
+        bot.malady)
+    bot._set_malady("")
+    cek("ILLNESS_BIRDFLU -> Bird Flu",
+        bot._baca_malady_dialog("add_smalltext|ILLNESS_BIRDFLU|") and bot.malady == "Bird Flu",
+        bot.malady)
+    bot._set_malady("")
+    cek("MALADY_VICIOUS_MOLDY_GUTS -> Vicious Moldy Guts",
+        bot._baca_malady_dialog("MALADY_VICIOUS_MOLDY_GUTS")
+        and bot.malady == "Vicious Moldy Guts", bot.malady)
+    # MALADY_VICIOUS_LUPUS mengandung MALADY_LUPUS: harus menang yang panjang.
+    bot._set_malady("")
+    cek("VICIOUS_LUPUS tidak salah jadi Lupus",
+        bot._baca_malady_dialog("MALADY_VICIOUS_LUPUS")
+        and bot.malady == "Vicious Lupus", bot.malady)
+
+    # Teks jadi tanpa prefix konstanta juga dikenali.
+    bot._set_malady("")
+    cek("teks jadi 'Brainworms' dikenali",
+        bot._baca_malady_dialog("add_textbox|You have `4Brainworms`` illness.``|")
+        and bot.malady == "Brainworms", bot.malady)
+
+    # Sehat: ILLNESS_CURED / ILLNESS_NONE mengosongkan status.
+    bot._set_malady("Lupus")
+    cek("ILLNESS_CURED mengosongkan", bot._baca_malady_dialog("add_textbox|ILLNESS_CURED|")
+        and bot.malady == "", repr(bot.malady))
+    bot._set_malady("Lupus")
+    cek("ILLNESS_NONE mengosongkan", bot._baca_malady_dialog("ILLNESS_NONE")
+        and bot.malady == "", repr(bot.malady))
+
+    # Dialog tak relevan tidak boleh menghapus status yang sudah benar.
+    bot._set_malady("Lupus")
+    cek("dialog toko tidak menghapus malady",
+        bot._baca_malady_dialog("add_button|buy|Buy|") is False and bot.malady == "Lupus",
+        bot.malady)
+
+    # Terbawa ke payload stats (dipakai GUI + web).
+    cek("malady ada di stats()", bot.stats().get("malady") == "Lupus",
+        str(bot.stats().get("malady")))
+
+
 def test_tile_update_koordinat() -> None:
     bagian("7c. SendTileUpdateData: koordinat dari tank, ext = blok")
     import struct
@@ -1140,7 +1230,8 @@ def main() -> int:
                test_logon_fail_cooldown, test_hint_login_tidak_salah_menyebut_sandi,
                test_perintah_tanpa_argumen,
                test_status_gems_level, test_tile_update_koordinat,
-               test_proxypool_kredensial_unik,
+               test_proxypool_kredensial_unik, test_malady_dari_dialog,
+               test_modify_inventory,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

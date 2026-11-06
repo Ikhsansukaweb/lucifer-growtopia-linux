@@ -555,26 +555,28 @@ GtkWidget *App::tab_bots() {
     gtk_widget_set_margin_start(kanan, 4);
     gtk_paned_pack2(GTK_PANED(body), kanan, TRUE, FALSE);
 
-    // Kolom terakhir (9) = boolean centang, bukan teks.
-    store_bots_ = gtk_list_store_new(10, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
+    // Kolom terakhir (10) = boolean centang, bukan teks.
+    store_bots_ = gtk_list_store_new(11, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
                                      G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING,
-                                     G_TYPE_BOOLEAN);
+                                     G_TYPE_STRING, G_TYPE_BOOLEAN);
     view_bots_ = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store_bots_));
     gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(view_bots_), GTK_TREE_VIEW_GRID_LINES_NONE);
-    const char *judul[] = {"BOT", "NAMA", "LEVEL", "PING", "STATUS", "PROXY",
-                           "DUNIA", "POSISI", "GEMS"};
-    const int lebar[] = {110, 130, 52, 58, 110, 170, 120, 70, 62};
+    // MALADY sengaja tepat di sebelah LEVEL: status sakit (surgeon) hanya
+    // masuk akal dibaca bersama level karakter.
+    const char *judul[] = {"BOT", "NAMA", "LEVEL", "MALADY", "PING", "STATUS",
+                           "PROXY", "DUNIA", "POSISI", "GEMS"};
+    const int lebar[] = {110, 130, 52, 130, 58, 110, 170, 120, 70, 62};
     // Kolom centang paling kiri: penanda bot mana yang ikut dikontrol.
     {
         GtkCellRenderer *r = gtk_cell_renderer_toggle_new();
         g_signal_connect(r, "toggled", G_CALLBACK(on_toggle_bot), this);
         GtkTreeViewColumn *c = gtk_tree_view_column_new_with_attributes(
-            "PILIH", r, "active", 9, nullptr);
+            "PILIH", r, "active", 10, nullptr);
         gtk_tree_view_column_set_min_width(c, 54);
         gtk_tree_view_append_column(GTK_TREE_VIEW(view_bots_), c);
     }
-    for (int i = 0; i < 9; ++i) add_col(view_bots_, judul[i], i, lebar[i]);
+    for (int i = 0; i < 10; ++i) add_col(view_bots_, judul[i], i, lebar[i]);
     // Klik = pilih bot (bisa banyak). Dobel-klik / Enter = buka halaman detail.
     // Dulu `cursor-changed` langsung membuka detail, jadi mustahil memilih
     // beberapa bot sekaligus untuk dikontrol bersama.

@@ -29,7 +29,7 @@ from .account import (Account, RedirectInfo, detik_tunggu,
 from .enet import ENetHost
 from .items import ItemDatabase
 from .protocol import NetGamePacket as G, NetMessage as M, Tank
-from .world import DroppedItem, Tile, World, parse_world
+from .world import DroppedItem, Tile, World, parse_tile_updates, parse_world
 
 log = logging.getLogger("lucifer.bot")
 
@@ -194,6 +194,16 @@ class Inventory:
         else:
             it.count += int(jumlah)
 
+    def kurangi(self, item_id: int, jumlah: int = 1) -> None:
+        """Turunkan jumlah item di inventaris lokal (kebalikan `tambah`)."""
+        it = self.items.get(int(item_id))
+        if it is None:
+            return
+        it.count -= int(jumlah)
+        if it.count <= 0:
+            self.items.pop(int(item_id), None)
+            self.itemcount = len(self.items)
+
     # alias sesuai docs Lucifer
     findItem = getItemCount
 
@@ -339,6 +349,13 @@ class Bot:
         self._last_spawn_netid: int = 0
         self.gem_count = 0
         self.level = 0
+        # Malady/illness (status sakit, hanya ada di kategori Surgeon).
+        # Nama mengikuti konstanta klien: ILLNESS_* (luka biasa) dan
+        # MALADY_* (penyakit surgeon). Retail TIDAK mengirim variant khusus
+        # untuk ini; nilainya hanya muncul di teks dialog profil
+        # ("... illness.``" / " degrees``"). Karena itu sumbernya sama dengan
+        # level: dialog hasil wrench diri sendiri.
+        self.malady = ""
         # Level hanya dikirim server di dialog profil; minta sekali per sesi.
         self._profil_diminta = False
         # Markup dialog terakhir (diagnosis format server).
@@ -909,6 +926,8 @@ class Bot:
             if self.local is not None and self.world.tiles:
                 self._profil_diminta = True
                 self.minta_profil()
+        elif t == G.ModifyItemInventory:
+            self._apply_modify_inventory(tank)
         elif t == G.SendInventoryState:
             self._dump("inv", ext)
             self.inventory.parse(ext)
@@ -919,6 +938,21 @@ class Bot:
             self._reply_ping(tank)
         elif t == G.SendTileUpdateData:
             self._apply_tile_update(tank, ext)
+        elif t == G.SendTileUpdateDataMultiple:
+            # Server retail mengirim type 6 (bukan type 5) untuk perubahan
+            # blok hasil punch. Sebelum ini tidak ditangani sama sekali, jadi
+            # `world` tak pernah berubah: tile yang sudah dipecah tetap terlihat
+            # berisi, bot memukulnya terus, dan `taruh()` tidak punya sasaran.
+            self._dump("tilemulti", ext)
+            if os.environ.get("LUCIFER_DUMP"):
+                try:
+                    d = Path("/tmp/opencode")
+                    d.mkdir(parents=True, exist_ok=True)
+                    with (d / "tilemulti.log").open("a") as f:
+                        f.write(f"{time.strftime('%H:%M:%S')} {len(ext)}B {ext.hex()}\n")
+                except Exception:  # noqa: BLE001
+                    pass
+            self._apply_tile_updates(ext)
         elif t == G.ItemChangeObject:
             self._apply_item_change(tank, ext)
         elif t == G.State:
@@ -1155,6 +1189,36 @@ class Bot:
         )
         self.send_raw(reply)
 
+    def _apply_modify_inventory(self, tank: Tank) -> None:
+        """`ModifyItemInventory` (tank type 13) — stok satu item naik/turun.
+
+        Format (Gurotopia `database/world.cpp:modify_item_inventory`):
+
+            int32 @0 = (jumlah << 24) | 0x000d   -> item BERTAMBAH
+                     = (jumlah << 16) | 0x000d   -> item BERKURANG
+            value    = item id
+
+        Byte 0 tetap 13 (tipe paket); byte 2 = berkurang, byte 3 = bertambah.
+        Tanpa handler ini inventaris lokal tidak pernah berubah setelah
+        menaruh/memecah blok, jadi `taruh()` mengira stok masih ada dan terus
+        mengirim `tileChange` walau server sudah menolak.
+        """
+        try:
+            item_id = int(tank.value)
+            if item_id <= 0 or item_id == 112:   # 112 = gems, bukan item
+                return
+            tambah = int(tank.animation_type)    # byte 3
+            kurang = int(tank.jump_count)        # byte 2
+            if tambah:
+                self.inventory.tambah(item_id, tambah)
+            elif kurang:
+                self.inventory.kurangi(item_id, kurang)
+            else:
+                return
+            self._emit("inventory", self.inventory)
+        except Exception as e:  # noqa: BLE001
+            log.debug("modify inventory gagal: %s", e)
+
     def _apply_tile_update(self, tank: Tank, ext: bytes) -> None:
         """Terapkan pembaruan satu tile (SendTileUpdateData).
 
@@ -1180,6 +1244,20 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             log.debug("tile update gagal: %s", e)
 
+    def _apply_tile_updates(self, ext: bytes) -> None:
+        """Terapkan `SendTileUpdateDataMultiple` (Tank type 6)."""
+        try:
+            for t in parse_tile_updates(ext, self.items_db):
+                idx = self.world.index_of(t.x, t.y)
+                old = self.world.tile(t.x, t.y)
+                if old is not None:
+                    t.seed_age, t.fruit_count, t.ready = (
+                        old.seed_age, old.fruit_count, old.ready)
+                self.world.update_tile(idx, t)
+                self._emit("tile_update", t)
+        except Exception as e:  # noqa: BLE001
+            log.debug("tile update multiple gagal: %s", e)
+
     def _sapu_objek(self) -> None:
         """Ambil objek dalam radius yang belum terambil.
 
@@ -1197,13 +1275,25 @@ class Bot:
     def _boleh_ambil(self, x: float, y: float) -> bool:
         """Apakah objek ini boleh diambil otomatis?
 
-        `auto_collect` MATI = hanya objek yang menempel di badan bot, yaitu
-        tile tempat bot berdiri. Ini perilaku normal Growtopia: jalan menimpa
-        item = terambil. `auto_collect` NYALA = semua objek dalam
-        `auto_collect_radius` tile.
+        Urutan prioritas (sama dengan `AutoCollect.sekali`):
+
+        1. **Tile terpilih MENANG** — kalau fitur AutoCollect punya daftar
+           `tiles`, hanya objek di tile itu yang diambil. Radius dan
+           `auto_collect` diabaikan sepenuhnya.
+        2. `auto_collect` NYALA = semua objek dalam `auto_collect_radius`.
+        3. `auto_collect` MATI = hanya tile tempat bot berdiri (perilaku
+           normal Growtopia: menimpa item = terambil).
+
+        Tanpa aturan (1) di sini, jalur otomatis `_auto_ambil` (dipanggil tiap
+        `ItemChangeObject`) menyapu radius walau user sudah memilih tile —
+        itu bug "udah diset tile tetap ambil radius".
         """
         if not self.local:
             return False
+        pilih = getattr(getattr(self, "fitur", None), "autocollect", None)
+        tiles = getattr(pilih, "tiles", None) if pilih is not None else None
+        if tiles:
+            return (int(x // 32), int(y // 32)) in set(map(tuple, tiles))
         if self.auto_collect:
             return self._in_range_px(x, y, self.auto_collect_radius)
         return (int(x // 32) == self.local.tile_x
@@ -1402,7 +1492,8 @@ class Bot:
         if n < 0:
             return
         self.gem_count = n
-        self._emit("status_update", {"level": self.level, "gems": self.gem_count})
+        self._emit("status_update", {"level": self.level, "gems": self.gem_count,
+                                     "malady": self.malady})
 
     def _set_level(self, nilai: Any) -> None:
         try:
@@ -1412,7 +1503,8 @@ class Bot:
         if n <= 0:
             return
         self.level = n
-        self._emit("status_update", {"level": self.level, "gems": self.gem_count})
+        self._emit("status_update", {"level": self.level, "gems": self.gem_count,
+                                     "malady": self.malady})
 
     def _baca_level_dialog(self, teks: str) -> bool:
         """Ambil level dari dialog profil (`add_player_info`).
@@ -1435,7 +1527,92 @@ class Bot:
                 potong = baris.split("Gems:", 1)[1].strip()
                 if potong:
                     self._set_gems(potong.split()[0])
+            else:
+                self._baca_malady_dialog(baris)
         return hasil
+
+    # Nama malady/illness dari klien (rodata libgrowtopia.so), dipetakan ke
+    # teks yang enak dibaca. Kunci = potongan yang dicari di dialog.
+    MALADY_NAMA = {
+        "ILLNESS_APPENDICITIS": "Appendicitis",
+        "ILLNESS_BAD_DISC": "Bad Disc",
+        "ILLNESS_BIGTRAUMA": "Big Trauma",
+        "ILLNESS_BIRDFLU": "Bird Flu",
+        "ILLNESS_BRAIN_TUMOR": "Brain Tumor",
+        "ILLNESS_BROKEN_ARM": "Broken Arm",
+        "ILLNESS_BROKEN_LEG": "Broken Leg",
+        "ILLNESS_HEAD_INJURY": "Head Injury",
+        "ILLNESS_HEART_ATTACK": "Heart Attack",
+        "ILLNESS_KIDNEY_FAILURE": "Kidney Failure",
+        "ILLNESS_LIVER": "Liver Damage",
+        "ILLNESS_LOVESTRUCK": "Lovestruck",
+        "ILLNESS_LUNG_TUMOR": "Lung Tumor",
+        "ILLNESS_MONKEYFLU": "Monkey Flu",
+        "ILLNESS_NOSEJOB": "Nose Job",
+        "ILLNESS_SHATTERED": "Shattered",
+        "ILLNESS_TRAUMA": "Trauma",
+        "ILLNESS_TURTLEFLU": "Turtle Flu",
+        "MALADY_BRAINWORMS": "Brainworms",
+        "MALADY_BROKEN_HEART": "Broken Heart",
+        "MALADY_CHAOS_INFECTION": "Chaos Infection",
+        "MALADY_CHICKEN_FEET": "Chicken Feet",
+        "MALADY_ECTO_BONES": "Ecto Bones",
+        "MALADY_FATTY_LIVER": "Fatty Liver",
+        "MALADY_GEM_CUTS": "Gem Cuts",
+        "MALADY_GRUMBLETEETH": "Grumbeteeth",
+        "MALADY_LUPUS": "Lupus",
+        "MALADY_MOLDY_GUTS": "Moldy Guts",
+        "MALADY_TORN_PUNCHING_MUSCLE": "Torn Punching Muscle",
+        "MALADY_VICIOUS_BRAINWORMS": "Vicious Brainworms",
+        "MALADY_VICIOUS_CHAOS_INFECTION": "Vicious Chaos Infection",
+        "MALADY_VICIOUS_ECTO_BONES": "Vicious Ecto Bones",
+        "MALADY_VICIOUS_FATTY_LIVER": "Vicious Fatty Liver",
+        "MALADY_VICIOUS_LUPUS": "Vicious Lupus",
+        "MALADY_VICIOUS_MOLDY_GUTS": "Vicious Moldy Guts",
+    }
+
+    # Frasa yang berarti "tidak sakit". Klien menulis `ILLNESS_CURED` /
+    # `ILLNESS_NONE` di kondisi normal.
+    MALADY_SEHAT = ("ILLNESS_CURED", "ILLNESS_NONE")
+
+    def _baca_malady_dialog(self, baris: str) -> bool:
+        """Ambil status malady dari satu baris dialog.
+
+        Format retail belum terdokumentasi; yang ada di binary klien hanya
+        potongan teks `%d degrees`` dan `illness.``` . Jadi pemindaian dibuat
+        longgar: cocokkan nama konstanta (`MALADY_*` / `ILLNESS_*`) ATAU teks
+        yang sudah enak dibaca ("Bird Flu"), lalu simpan sebagai satu string.
+        Kalau tidak ketemu, status tidak diubah (bukan dikosongkan) supaya
+        dialog toko tidak menghapus nilai yang sudah benar.
+        """
+        naik = baris.upper()
+        for kunci in self.MALADY_SEHAT:
+            if kunci in naik:
+                self._set_malady("")
+                return True
+        # Nama terpanjang dulu: `MALADY_VICIOUS_LUPUS` mengandung
+        # `MALADY_LUPUS`, jadi urutan naif akan salah petakan.
+        for kunci, nama in sorted(self.MALADY_NAMA.items(),
+                                  key=lambda kv: len(kv[0]), reverse=True):
+            if kunci in naik:
+                self._set_malady(nama)
+                return True
+        # Teks jadi: "Bird Flu" / "Vicious Lupus" dst (tanpa prefix konstanta).
+        # Urut dari nama TERPANJANG supaya "Vicious Lupus" tidak tertangkap
+        # lebih dulu sebagai "Lupus".
+        for nama in sorted(self.MALADY_NAMA.values(), key=len, reverse=True):
+            if nama.lower() in baris.lower():
+                self._set_malady(nama)
+                return True
+        return False
+
+    def _set_malady(self, nama: str) -> None:
+        nama = (nama or "").strip()
+        if nama == self.malady:
+            return
+        self.malady = nama
+        self._emit("status_update", {"level": self.level, "gems": self.gem_count,
+                                     "malady": self.malady})
 
     def _coba_level(self, nilai: Any) -> bool:
         """Terapkan level hanya kalau masuk akal (1..125)."""
@@ -1708,7 +1885,13 @@ class Bot:
         """
         px, py = float(x * 32), float(y * 32)
         t = self.world.tile(int(x), int(y))
-        if t is None or t.fg == 0 or t.fg % 2 == 1 or not self.local:
+        # Aturan posisi dari `library.lua:tileChange` deltaX: tile KOSONG atau
+        # BIBIT memakai posisi tile, selain itu posisi pemain. Tile berisi
+        # blok ditaruh/dipukul dari posisi pemain — memakai posisi tile membuat
+        # server menganggapnya di luar jangkauan dan menolak diam-diam.
+        if t is None or not self.local:
+            ox, oy = px, py
+        elif t.fg == 0 or t.fg % 2 == 1:
             ox, oy = px, py
         else:
             ox, oy = self.local.posx, self.local.posy
@@ -2032,6 +2215,7 @@ class Bot:
             "inventory_items": len(self.inventory.items),
             "level": self.level,
             "gems": self.gem_count,
+            "malady": self.malady,
             "active_time": self.getActiveTime(),
             "captcha": self.captcha_status,
             "redirected": self.redirected,

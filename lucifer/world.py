@@ -29,7 +29,7 @@ from typing import Optional
 
 log = logging.getLogger("lucifer.world")
 
-__all__ = ["Tile", "World", "TILE_FLAGS"]
+__all__ = ["Tile", "World", "TILE_FLAGS", "parse_tile_updates"]
 
 # Bit flag tile Growtopia
 TILE_FLAGS = {
@@ -272,6 +272,31 @@ def parse_world(data: bytes, item_db=None) -> World:
         w.error = f"{type(e).__name__}: {e} (offset={r.pos}/{len(data)})"
         log.warning("parse_world gagal: %s", w.error)
     return w
+
+
+def parse_tile_updates(data: bytes, item_db=None) -> list[Tile]:
+    """Baca `SendTileUpdateDataMultiple` (Tank type 6).
+
+    Format (diverifikasi dari GrowServer `world/tiles/index.ts:tileUpdateMultiple`):
+
+        diulang:  u32 x, u32 y, <blok tile seperti di SendMapData>
+        penutup:  u32 0xFFFFFFFF
+
+    Tiap blok tile panjangnya tidak tetap (tergantung flag extra), jadi
+    pembacaan memakai `_read_tile` yang sudah tahu cara melewati extra data.
+    Tanpa parser ini, dunia tidak pernah berubah setelah blok pecah/ditaruh —
+    autofarm memukul tile yang sama terus dan tidak pernah menaruh blok.
+    """
+    out: list[Tile] = []
+    r = _Reader(data)
+    while r.pos + 8 <= len(data):
+        x = r.u32()
+        y = r.u32()
+        if x == 0xFFFFFFFF or y == 0xFFFFFFFF:
+            break
+        t = _read_tile(r, x, y, item_db)
+        out.append(t)
+    return out
 
 
 def _read_tile(r: _Reader, x: int, y: int, item_db) -> Tile:

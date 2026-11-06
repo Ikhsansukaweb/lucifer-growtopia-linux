@@ -168,22 +168,14 @@ def urut_dekat(bot: Bot, tiles: list[Tile]) -> list[Tile]:
 
 
 def dekati(bot: Bot, t: Tile, jangkau: int = JANGKAU_TILE) -> bool:
-    """Masuk jangkauan tile sasaran: cari jalan, kalau gagal geser langsung."""
-    if dalam_jangkau(bot, t, jangkau):
-        return True
-    for nx, ny in ((t.x, t.y + 1), (t.x, t.y - 1), (t.x + 1, t.y), (t.x - 1, t.y)):
-        tetangga = bot.world.tile(nx, ny)
-        if tetangga is None or tetangga.fg != 0:
-            continue
-        if bot.findPath(nx, ny) and dalam_jangkau(bot, t, jangkau):
-            return True
-    if bot.local is None:
-        return False
-    batas = jangkau - 1
-    dx = max(-batas, min(batas, t.x - bot.local.tile_x))
-    dy = max(-batas, min(batas, t.y - bot.local.tile_y))
-    if dx or dy:
-        bot.moveTo(dx, dy)
+    """Apakah tile sasaran bisa dikerjakan dari posisi sekarang.
+
+    Fungsi ini TIDAK menggerakkan bot. Versi lama memanggil `findPath` lalu
+    `moveTo` di dalam loop otomasi, sehingga bot berjalan sendiri keliling
+    dunia (dan sempat nyangkut di White Door saat baru masuk world). Gerakan
+    harus datang dari user atau dari fitur PathFinder, bukan efek samping
+    autofarm.
+    """
     return dalam_jangkau(bot, t, jangkau)
 
 
@@ -394,6 +386,10 @@ class AutoFarm:
         Autofarm bekerja pada blok, bukan tanaman: tile dianggap sasaran bila
         `fg` terisi dan bukan tanaman (`is_seed`). Tanaman siap panen milik
         Automation. `block_mode="manual"` membatasi ke satu id blok.
+
+        Saat `target_tiles` KOSONG, sasaran dibatasi ke tile dalam jangkauan
+        pukul. Versi lama mengembalikan semua blok se-dunia (ribuan tile) dan
+        bot berjalan mencari semuanya.
         """
         out = []
         for t in self.tiles_sasaran():
@@ -407,6 +403,9 @@ class AutoFarm:
             if not self.bot.hasAccess(t.x, t.y):
                 continue
             if self.block_mode == "manual" and self.block_id and t.fg != self.block_id:
+                continue
+            # Tanpa tile manual: hanya yang bisa dipukul dari posisi sekarang.
+            if not self.target_tiles and not self._dalam_jangkau(t):
                 continue
             out.append(t)
         return out
@@ -422,13 +421,22 @@ class AutoFarm:
         `kosong()` mengembalikan SEMUA tile kosong di dunia; kalau dipakai
         untuk menaruh, autofarm menanam blok di sembarang tempat dan
         inventory habis. Jadi taruh dibatasi ke tile yang baru dipecah.
+
+        Tile yang BARU dipukul siklus ini tetap dianggap sasaran walau
+        `world` masih mencatat `fg != 0`: klien asli (lihat
+        `automation.lua` deltaX) tidak menunggu konfirmasi `SendTileUpdateData`
+        sebelum menanam lagi — server yang memutuskan. Menunggu konfirmasi
+        membuat bot tidak pernah menaruh apa pun saat server tidak mengirim
+        pembaruan tile.
         """
         w = self.bot.world
         posisi = self._baru_kosong or set(self.target_tiles)
         out = []
         for x, y in posisi:
             t = w.tile(x, y)
-            if t is not None and t.fg == 0 and t.bg != 0 and self.bot.hasAccess(x, y):
+            if t is None or not self.bot.hasAccess(x, y):
+                continue
+            if t.fg == 0:
                 out.append(t)
         return out
 
@@ -450,6 +458,33 @@ class AutoFarm:
     def _dekati(self, t: Tile) -> bool:
         return dekati(self.bot, t, self.JANGKAU)
 
+    def _pukul_sampai_pecah(self, t: Tile) -> bool:
+        """Pukul tile sampai server MENGONFIRMASI blok hilang.
+
+        Tiap blok butuh jumlah pukulan berbeda (`block_health` di items.dat),
+        jadi jumlah pukulan tetap salah: blok keras tidak pecah, blok lunak
+        dipukul berlebihan. Konfirmasi datang lewat `SendTileUpdateData` /
+        `SendTileUpdateDataMultiple` (type 5/6) yang mengubah `world`.
+
+        Batas aman: `block_health` + 4 pukulan, dan maksimal ~4 detik.
+        """
+        db = getattr(self.bot, "items_db", None)
+        item = db.get(t.fg) if db is not None else None
+        butuh = int(getattr(item, "block_health", 0) or 0) if item else 0
+        batas = butuh + 4 if butuh else max(int(self.punch_count), 10)
+        for _ in range(batas):
+            if self._s._stop.is_set() or self.bot.status != BotStatus.online:
+                return False
+            self.bot.hit(t.x, t.y)
+            if not self.show_punch:
+                if _tunggu(self._s._stop, self._jeda(self.punch_delay)):
+                    return False
+            sekarang = self.bot.world.tile(t.x, t.y)
+            if sekarang is not None and sekarang.fg == 0:
+                return True
+        sekarang = self.bot.world.tile(t.x, t.y)
+        return sekarang is not None and sekarang.fg == 0
+
     # -- jeda ------------------------------------------------------------- #
     def _jeda(self, ms: float) -> float:
         """Terapkan `faster` (overclock) ke semua jeda."""
@@ -465,19 +500,16 @@ class AutoFarm:
         for t in self._urut_dekat(self.siap_pecah()):
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
-            if not self._dekati(t):
+            if not self._dalam_jangkau(t):
                 continue
             # Ingat blok apa yang pecah: mode "auto" memakainya lagi saat
             # menaruh, jadi tidak perlu isi id blok manual.
             self._blok_terakhir = t.fg
-            for _ in range(max(1, int(self.punch_count))):
-                self.bot.hit(t.x, t.y)
-                # `showpunch` = kirim semua pukulan tanpa jeda; default beri jeda
-                # supaya server sempat memproses tiap pukulan.
-                if not self.show_punch:
-                    if _tunggu(self._s._stop, self._jeda(self.punch_delay)):
-                        return n
-            # Catat tile bekas pecah: hanya di sini blok ditaruh lagi.
+            if not self._pukul_sampai_pecah(t):
+                # Belum pecah: JANGAN masuk daftar taruh. Menaruh di atas blok
+                # yang masih utuh = paket ditolak dan blok berikutnya tidak
+                # pernah diproses.
+                continue
             self._baru_kosong.add((t.x, t.y))
             n += 1
             self.dipeeah_total += 1
@@ -526,7 +558,10 @@ class AutoFarm:
                 break
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
-            if not self._dekati(t):
+            # Jangan kirim `tileChange` ke luar jangkauan: server retail
+            # menolaknya diam-diam, jadi blok tidak terpasang dan bot terus
+            # mengulang tile yang sama.
+            if not self._dalam_jangkau(t):
                 continue
             self.bot.place(t.x, t.y, blok)
             self._baru_kosong.discard((t.x, t.y))
