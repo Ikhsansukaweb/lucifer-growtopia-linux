@@ -1258,6 +1258,11 @@ class Bot:
     def bersihkan_aksi(self, x: int, y: int) -> None:
         self.reset_aksi(x, y)
 
+    def break_diterima(self, x: int, y: int) -> bool:
+        """Server sudah meng-echo bahwa blok di tile ini pecah."""
+        rec = self._aksi_ok.get((int(x), int(y)))
+        return bool(rec and rec[0] == "break")
+
     def place_diterima(self, x: int, y: int, item: int) -> bool:
         """Server sudah meng-echo place untuk tile ini dengan item tersebut."""
         rec = self._aksi_ok.get((int(x), int(y)))
@@ -1311,9 +1316,23 @@ class Bot:
             return
         x, y = int(tank.int_x), int(tank.int_y)
         if item_id in (ITEM_FIST, ITEM_WRENCH):
-            # Pukulan/wrench: bukan pemakaian item, tapi tetap kabar bahwa
-            # tile ini disentuh. Jangan ubah isi dunia dari sini (server yang
-            # menentukan kapan blok hilang).
+            # `value == 18` (Fist) pada echo = server menyatakan BLOK PECAH.
+            #
+            # Bukti dari klien asli (Growtopia HP):
+            #   in type=8 damage value=6   -> pukulan diterima, blok MASIH ada
+            #   in type=3 netid=1 value=18 -> ECHO: blok pecah
+            #   in type=3 netid=1 value=2  -> ECHO: place berhasil
+            #
+            # Jadi echo type=3 adalah konfirmasi NYATA untuk kedua aksi.
+            lama = self.world.tile(x, y)
+            if lama is not None and x >= 0 and y >= 0:
+                baru = Tile(x=x, y=y, fg=0, bg=lama.bg)
+                self.world.update_tile(self.world.index_of(x, y), baru)
+                self._emit("tile_update", baru)
+                self._aksi_ok[(x, y)] = ("break", item_id, time.time())
+                self.catat_paket("in", 0, f"BLOK PECAH dikonfirmasi server "
+                                          f"tile=({x},{y})")
+                self._emit("break_diterima", (x, y))
             return
         # Place diterima server: blok ini BENAR-BENAR ada di dunia sekarang.
         # Tanpa menerapkannya ke `world` lokal, bot tidak tahu blok baru sudah
@@ -1532,8 +1551,13 @@ class Bot:
 
                 lama = next((o for o in self.world.dropped if o.uid == uid_asli), None)
                 if lama is not None:
-                    # Objek yang sama di tile yang sama: jumlahnya bertambah.
-                    lama.count = min(255, int(lama.count) + jumlah)
+                    # `count` dari server adalah TOTAL objek itu, BUKAN
+                    # tambahan. Bukti dari paket merge (Growtopia HP):
+                    #   DROP uid=3 count=3, lalu 5, 6, 7  -> total berjalan
+                    # Gurotopia `merge_object()` juga mengirim
+                    # `count = object->count` (hasil penjumlahan di server),
+                    # jadi klien cukup menimpanya.
+                    lama.count = int(jumlah)
                     lama.x, lama.y = x, y
                     self._emit("dropped", uid_asli)
                 else:

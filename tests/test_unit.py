@@ -1098,6 +1098,72 @@ def test_proxypool_kredensial_unik() -> None:
             hapus["dihapus"] == 5 and hapus["total"] == 0, str(hapus))
 
 
+def test_merge_drop_total_bukan_tambahan() -> None:
+    bagian("7j. ItemChangeObject MERGE: count = TOTAL, bukan tambahan")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.world.dropped.clear()
+    bot.world.last_uid = 0
+
+    # Pola nyata dari Growtopia HP: netid=ALL lalu MERGE dengan count naik.
+    #   DROP uid=3 count=3 -> 5 -> 6 -> 7
+    def kirim(netid, uid, count, item=2):
+        bot._apply_item_change(
+            Tank(type=14, net_id=netid, target_net_id=uid, value=item,
+                 float_variable=float(count), vector_x=1822.0, vector_y=744.0),
+            b"")
+
+    kirim(0xFFFFFFFF, 3, 3)
+    cek("drop awal count=3", bot.world.dropped[0].count == 3,
+        str(bot.world.dropped[0].count))
+    for c in (5, 6, 7):
+        kirim(0xFFFFFFFD, 3, c)   # netid MERGE
+    cek("merge count = total (7), bukan 3+5+6+7", bot.world.dropped[0].count == 7,
+        str(bot.world.dropped[0].count))
+    cek("tidak ada duplikat objek", len(bot.world.dropped) == 1,
+        str(len(bot.world.dropped)))
+
+    # Item berbeda = objek terpisah.
+    kirim(0xFFFFFFFF, 4, 1, item=112)
+    cek("item lain jadi objek sendiri", len(bot.world.dropped) == 2,
+        str(len(bot.world.dropped)))
+
+
+def test_echo_break_konfirmasi() -> None:
+    bagian("7k. Echo type=3 value=18 = konfirmasi BLOK PECAH")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 60, 60
+    for y in range(60):
+        for x in range(60):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
+    bot.world = w
+    bot.world.tile(50, 22).fg = 2
+
+    cek("sebelum echo: bukan pecah", not bot.break_diterima(50, 22))
+    # Paket nyata: `in type=3 netid=1 tile=(53,26) value=18(Fist)`.
+    bot._apply_tile_change_echo(Tank(type=3, value=18, int_x=50, int_y=22))
+    cek("echo value=18 -> break_diterima", bot.break_diterima(50, 22))
+    cek("peta lokal jadi kosong", bot.world.tile(50, 22).fg == 0,
+        str(bot.world.tile(50, 22).fg))
+
+    # Echo place (value != 18) BUKAN konfirmasi pecah.
+    bot.reset_aksi(50, 22)
+    bot._apply_tile_change_echo(Tank(type=3, value=2, int_x=50, int_y=22))
+    cek("echo value=2 bukan break", not bot.break_diterima(50, 22))
+    cek("echo value=2 -> place_diterima", bot.place_diterima(50, 22, 2))
+
+
 def test_posisi_tidak_memindah_bot() -> None:
     bagian("7i. tileChange memakai posisi PEMAIN (bot tidak ikut geser)")
     from lucifer.account import Account
@@ -1351,6 +1417,7 @@ def main() -> int:
                test_modify_inventory,
                test_echo_place_kurangi_inventory, test_hit_counter,
                test_posisi_tidak_memindah_bot,
+               test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):
