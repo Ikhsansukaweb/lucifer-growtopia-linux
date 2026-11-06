@@ -520,18 +520,34 @@ def test_bot_aksi() -> None:
     bot.world.dropped.clear()
     bot.world.last_uid = 100
     tank.clear()
+    # Server mengirim uid objek di `target_net_id` (Gurotopia: `.uid`).
     bot._apply_item_change(
-        _T2(type=14, net_id=0xFFFFFFFF, value=555,
-            vector_x=400.0, vector_y=360.0), b"")
+        _T2(type=14, net_id=0xFFFFFFFF, target_net_id=101, value=555,
+            float_variable=1.0, vector_x=400.0, vector_y=360.0), b"")
     baru = [d for d in bot.world.dropped if d.item_id == 555]
     cek("item jatuh menambah world.dropped", bool(baru), str(bot.world.dropped))
-    cek("uid objek baru = last_uid + 1", bool(baru) and baru[0].uid == 101,
+    cek("uid diambil dari target_net_id (bukan dikarang)",
+        bool(baru) and baru[0].uid == 101,
         str([d.uid for d in baru]))
     import time as _t
     _t.sleep(0.15)   # auto-ambil menunggu 30 ms lalu kirim type 11
     cek("auto-collect mengirim type 11 tanpa disuruh",
         any(t.type == 11 and t.value == 101 for t in tank),
         str([(t.type, t.value) for t in tank]))
+
+    # Server retail mengirim uid=-1 pada drop (hasil decode hex mentah),
+    # tetapi paket pickup memakai uid. Counter server ditiru: last_uid + 1.
+    bot.world.dropped.clear()
+    tank.clear()
+    bot._apply_item_change(
+        _T2(type=14, net_id=0xFFFFFFFF, value=777,
+            float_variable=1.0, vector_x=400.0, vector_y=360.0), b"")
+    cek("uid=-1 -> uid ditiru dari last_uid+1",
+        bot.world.dropped and bot.world.dropped[0].uid == 102,
+        str([d.uid for d in bot.world.dropped]))
+    cek("item id tetap dari value",
+        bot.world.dropped and bot.world.dropped[0].item_id == 777,
+        str([d.item_id for d in bot.world.dropped]))
 
     # item diambil orang lain (netid pemain) -> hilang dari world.dropped
     bot._apply_item_change(_T2(type=14, net_id=6, value=101), b"")
@@ -1133,6 +1149,23 @@ def test_merge_drop_total_bukan_tambahan() -> None:
         str(len(bot.world.dropped)))
 
 
+def test_arti_value_item_change_object() -> None:
+    bagian("7l. type 14: arti `value` beda menurut netid")
+    from lucifer import nama as N
+
+    # 18 = Fist punya nama khusus; nilai lain tanpa db jadi `#id`.
+    cek("netid=ALL -> value diperlakukan sebagai item",
+        N.tank_value(14, 18, None, 0xFFFFFFFF) == "Fist(pukul)",
+        N.tank_value(14, 18, None, 0xFFFFFFFF))
+    cek("netid=MERGE -> value diperlakukan sebagai item",
+        N.tank_value(14, 18, None, 0xFFFFFFFD) == "Fist(pukul)",
+        N.tank_value(14, 18, None, 0xFFFFFFFD))
+    # netid=pemain -> value = uid objek (BUKAN item id 5)
+    hasil = N.tank_value(14, 5, None, 3)
+    cek("netid=3 value=5 -> uid=5 (bukan nama item)",
+        "uid=5" in hasil and "Lava" not in hasil, hasil)
+
+
 def test_echo_break_konfirmasi() -> None:
     bagian("7k. Echo type=3 value=18 = konfirmasi BLOK PECAH")
     from lucifer.account import Account
@@ -1418,6 +1451,7 @@ def main() -> int:
                test_echo_place_kurangi_inventory, test_hit_counter,
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
+               test_arti_value_item_change_object,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

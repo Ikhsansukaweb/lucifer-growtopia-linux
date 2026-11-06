@@ -156,17 +156,25 @@ def object_type(o: int) -> str:
     return OBJECT_TYPE.get(int(o), f"?{o}")
 
 
-def tank_value(t: int, value: int, item_db: Any = None) -> str:
-    """`value` diberi nama sesuai tipe paketnya."""
-    t, value = int(t), int(value)
+def tank_value(t: int, value: int, item_db: Any = None, nid: int = 0) -> str:
+    """`value` diberi nama sesuai tipe paket DAN netid-nya.
+
+    Untuk `ItemChangeObject` (type 14) artinya berbeda tergantung `netid`:
+      netid = ALL / MERGE  -> `value` = item id      (objek muncul / menumpuk)
+      netid = pemain       -> `value` = uid objek    (objek diambil)
+    Bukti dari jurnal paket: `netid=ALL value=2(Dirt)` vs `netid=3 value=5`
+    (uid 5, BUKAN item id 5).
+    """
+    t, value, nid = int(t), int(value), int(nid)
     if t == 3 or t == 8:
         # TileChangeRequest / TileApplyDamage: 18 = pukul, lain = item id
         return item_nama(value, item_db)
     if t == 13:
         return item_nama(value, item_db)
     if t == 14:
-        # ItemChangeObject: value = item id
-        return item_nama(value, item_db)
+        if nid in (-1, 0xFFFFFFFF, -3, 0xFFFFFFFD):
+            return item_nama(value, item_db)      # value = item id
+        return f"uid={value}"                     # value = uid objek
     if t == 11:
         return f"uid={value}"
     return str(value)
@@ -193,6 +201,11 @@ def ringkas_tank(t: Any, item_db: Any = None) -> str:
     bagian = [f"type={tt}({tank_type(tt)})"]
     if g("net_id"):
         bagian.append(f"netid={netid(g('net_id'))}")
+    # `target_net_id` = UID objek untuk ItemChangeObject. Tanpa ini log
+    # membingungkan: uid tidak kelihatan, `value` disangka item id.
+    uid_obj = g("target_net_id")
+    if uid_obj and uid_obj > 0 and uid_obj < 0x7FFFFFFF:
+        bagian.append(f"uid={uid_obj}")
     if g("int_x") or g("int_y"):
         bagian.append(f"tile=({int(g('int_x'))},{int(g('int_y'))})")
     if g("vector_x") or g("vector_y"):
@@ -200,7 +213,8 @@ def ringkas_tank(t: Any, item_db: Any = None) -> str:
     if g("vector_x2") or g("vector_y2"):
         bagian.append(f"vec2=({g('vector_x2'):.0f},{g('vector_y2'):.0f})")
     if g("value"):
-        bagian.append(f"value={g('value')}({tank_value(tt, g('value'), item_db)})")
+        bagian.append(f"value={g('value')}"
+                      f"({tank_value(tt, g('value'), item_db, g('net_id'))})")
     if g("object_type"):
         bagian.append(f"obj={g('object_type')}({object_type(g('object_type'))})")
     if g("animation_type"):

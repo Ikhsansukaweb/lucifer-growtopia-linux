@@ -1024,6 +1024,11 @@ class Bot:
             msg = P.remove_color(vl.get(1).as_string() if vl.get(1) else "")
             self.console.append(msg)
             self._emit("console", msg)
+            # Konfirmasi RESMI server saat item masuk inventaris:
+            #   `Collected 1 Dirt Seed` / `Collected 3 Dirt`
+            # Ini lebih andal daripada menebak dari `ItemChangeObject`
+            # (yang `value`-nya uid objek, bukan item id).
+            self._baca_collected(msg)
         elif fn == "OnSendToServer":
             self._on_send_to_server(vl)
         elif fn == "OnSuperMainStartAcceptLogonHrdxs47254722215a":
@@ -1226,6 +1231,39 @@ class Bot:
         if key[0] < 0 or key[1] < 0:
             return
         self._hit_tiles[key] = self._hit_tiles.get(key, 0) + 1
+
+    def _baca_collected(self, msg: str) -> bool:
+        """Tambah stok dari pesan `Collected <n> <nama item>`.
+
+        Contoh nyata dari server: `Collected `w1 Dirt Seed``. Rarity: `w1```
+        Nama item dicocokkan ke items.dat (bukan ditebak dari uid).
+        """
+        teks = (msg or "").strip()
+        if not teks.lower().startswith("collected "):
+            return False
+        sisa = teks[len("collected "):].strip()
+        # buang sisa rarity di belakang
+        potong = sisa.split("Rarity")[0].strip().rstrip(".")
+        bagian = potong.split(None, 1)
+        if len(bagian) < 2:
+            return False
+        try:
+            jumlah = int(bagian[0])
+        except ValueError:
+            return False
+        nama = bagian[1].strip()
+        db = self.items_db
+        if db is None or jumlah <= 0 or not nama:
+            return False
+        cocok = db.find(nama, exact=True) or db.find(nama)
+        if not cocok:
+            return False
+        item_id = cocok[0].id
+        self.inventory.tambah(item_id, jumlah)
+        self._emit("inventory", self.inventory)
+        self.catat_paket("in", 0, f"INVENTORY +{jumlah} {nama} (#{item_id}) "
+                                  f"dari konfirmasi server")
+        return True
 
     def _on_play_sfx(self, file: str) -> None:
         """Terjemahkan suara balasan server jadi status aksi.
@@ -1539,15 +1577,22 @@ class Bot:
                 jumlah = int(tank.float_variable)
                 if jumlah <= 0:
                     jumlah = 1
+                # UID objek. Hasil decode byte-per-byte dari paket retail:
+                #
+                #   drop   : netid=-1  uid=-1 (hampir selalu)  value=item id
+                #   diambil: netid=pemain  uid=-1              value=uid objek
+                #
+                # Server TIDAK mengirim uid pada drop, tetapi paket pickup
+                # memakai uid. Jadi counter server harus DITIRU: `last_uid`
+                # dari SendMapData, lalu naik satu tiap objek baru
+                # (Gurotopia: `++world.last_object_uid`). Kalau server
+                # kebetulan memberi uid (ada 1 kasus: uid=17), pakai itu.
                 uid_asli = int(tank.target_net_id)
-                if uid_asli <= 0 or uid_asli == 0x7FFFFFFF:
+                if uid_asli <= 0 or uid_asli >= 0x7FFFFFFF:
                     self.world.last_uid = int(self.world.last_uid) + 1
                     uid_asli = int(self.world.last_uid)
-                else:
-                    # Server memberi uid; simpan supaya penomoran berikutnya
-                    # tidak bentrok.
-                    if uid_asli > int(self.world.last_uid):
-                        self.world.last_uid = uid_asli
+                elif uid_asli > int(self.world.last_uid):
+                    self.world.last_uid = uid_asli
 
                 lama = next((o for o in self.world.dropped if o.uid == uid_asli), None)
                 if lama is not None:
@@ -1587,10 +1632,24 @@ class Bot:
                 diambil = next((o for o in self.world.dropped if o.uid == uid), None)
                 self.world.dropped = [o for o in self.world.dropped if o.uid != uid]
                 self._emit("picked", uid)
-                if diambil is not None and (self.local is None
-                                            or int(tank.net_id) == self.local.netid):
-                    self.inventory.tambah(diambil.item_id, max(1, diambil.count))
-                    self._emit("inventory", self.inventory)
+                # Paket pickup HANYA membawa uid, tidak membawa item id.
+                # Item id dicari dari daftar objek yang sudah kita ketahui
+                # (dari paket add_object sebelumnya). Kalau tidak ketemu,
+                # laporkan apa adanya — jangan menebak.
+                if diambil is not None:
+                    nama_item = (self.items_db.name_of(diambil.item_id)
+                                 if self.items_db else f"#{diambil.item_id}")
+                    self.catat_paket("in", 0,
+                                     f"DIAMBIL uid={uid} item_id={diambil.item_id}"
+                                     f"({nama_item}) count={diambil.count}")
+                else:
+                    self.catat_paket("in", 0,
+                                     f"DIAMBIL uid={uid} (item id tidak diketahui "
+                                     f"- objek tidak ada di daftar lokal)")
+                # JANGAN menambah stok di sini. Stok bertambah dari pesan
+                # resmi `Collected <n> <item>` (lihat `_baca_collected`).
+                # Menambah di dua tempat membuat stok dobel, dan `diambil`
+                # sering None karena uid tidak cocok.
         except Exception as e:  # noqa: BLE001
             log.debug("item change gagal: %s", e)
 
