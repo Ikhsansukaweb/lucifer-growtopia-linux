@@ -953,6 +953,17 @@ class AutoCollect:
                 continue
             if self.check and not any(o.uid == d.uid for o in self.bot.world.dropped):
                 continue
+            # Objek tanpa uid (server mengirim uid=-1 untuk semua drop baru)
+            # TIDAK bisa diambil lewat type 11 — server menolak diam-diam.
+            # Satu-satunya cara: berjalan ke posisinya, seperti pemain manusia.
+            if not d.uid:
+                self.bot._jalan_ke_item(d.x, d.y)
+                n += 1
+                continue
+            # Jangan ulang uid yang sama terus-menerus: kalau server tidak
+            # membalas 3 kali, uid itu memang tidak bisa diambil.
+            if self.bot.ambil_gagal(d.uid):
+                continue
             self.bot.collectObject(d.uid)
             n += 1
             if interval:

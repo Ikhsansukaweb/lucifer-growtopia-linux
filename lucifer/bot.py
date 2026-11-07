@@ -1496,6 +1496,10 @@ class Bot:
             if self._boleh_ambil(d.x, d.y):
                 self._auto_ambil(d.uid, d.x, d.y)
 
+    def ambil_gagal(self, uid: int) -> bool:
+        """True kalau uid ini sudah dicoba 3 kali tanpa berhasil diambil."""
+        return self._ambil_n.get(int(uid), 0) >= 3
+
     def _jalan_ke_item(self, x: float, y: float) -> None:
         """Ambil objek tanpa uid dengan berjalan ke posisinya.
 
@@ -2335,6 +2339,10 @@ class Bot:
         d = next((o for o in self.world.dropped if o.uid == int(oid)), None)
         if d is None:
             return False
+        # Hitung percobaan: server tidak membalas apa pun untuk uid yang tidak
+        # dikenal, jadi tanpa batas bot akan mengirim type 11 selamanya.
+        uid_i = int(oid)
+        self._ambil_n[uid_i] = self._ambil_n.get(uid_i, 0) + 1
         return self.send_raw(
             Tank(
                 type=G.ItemActivateObjectRequest,
@@ -2353,11 +2361,21 @@ class Bot:
         """
         n = 0
         for d in list(self.world.dropped):
-            if self._in_range_px(d.x, d.y, range_):
-                if self.collectObject(d.uid):
-                    n += 1
-                if interval:
-                    time.sleep(interval / 1000.0)
+            if not self._in_range_px(d.x, d.y, range_):
+                continue
+            # uid=0: server tidak memberi uid, type 11 pasti ditolak.
+            # Satu-satunya cara: berjalan ke posisi item.
+            if not d.uid:
+                self._jalan_ke_item(d.x, d.y)
+                n += 1
+                continue
+            # Jangan ulang uid yang sudah 3x tidak dibalas server.
+            if self.ambil_gagal(d.uid):
+                continue
+            if self.collectObject(d.uid):
+                n += 1
+            if interval:
+                time.sleep(interval / 1000.0)
         return n
 
     def retrieve(self, x: int, y: int, count: int = 200) -> bool:
