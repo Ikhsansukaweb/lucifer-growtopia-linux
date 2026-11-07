@@ -1319,18 +1319,22 @@ def test_echo_break_konfirmasi() -> None:
         for x in range(60):
             w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
     bot.world = w
+    from lucifer.bot import Player
+    bot.local = Player(netid=1, name="uji", posx=0.0, posy=0.0)
     bot.world.tile(50, 22).fg = 2
 
     cek("sebelum echo: bukan pecah", not bot.break_diterima(50, 22))
     # Paket nyata: `in type=3 netid=1 tile=(53,26) value=18(Fist)`.
-    bot._apply_tile_change_echo(Tank(type=3, value=18, int_x=50, int_y=22))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=1, value=18,
+                                     int_x=50, int_y=22))
     cek("echo value=18 -> break_diterima", bot.break_diterima(50, 22))
     cek("peta lokal jadi kosong", bot.world.tile(50, 22).fg == 0,
         str(bot.world.tile(50, 22).fg))
 
     # Echo place (value != 18) BUKAN konfirmasi pecah.
     bot.reset_aksi(50, 22)
-    bot._apply_tile_change_echo(Tank(type=3, value=2, int_x=50, int_y=22))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=1, value=2,
+                                     int_x=50, int_y=22))
     cek("echo value=2 bukan break", not bot.break_diterima(50, 22))
     cek("echo value=2 -> place_diterima", bot.place_diterima(50, 22, 2))
 
@@ -1376,6 +1380,99 @@ def test_posisi_tidak_memindah_bot() -> None:
         f"value={tc.value}")
 
 
+def test_collect_int_x_bukan_count() -> None:
+    bagian("7s. collectObject: int_x = invbit (0/1), BUKAN jumlah item")
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.world import DroppedItem
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.local = Player(netid=1, name="uji", posx=1254.0, posy=752.0)
+
+    # Bukti dari log: count=30 dikirim sebagai int_x=30 -> server DIAM,
+    # sedangkan count=1 -> int_x=1 -> BERHASIL.
+    bot.world.dropped = [DroppedItem(item_id=14, x=1254.0, y=752.0,
+                                     count=30, uid=5)]
+    kirim = []
+    bot.send_raw = lambda pkt, ext=b"": (kirim.append(pkt), True)[1]  # type: ignore[method-assign]
+    bot.collectObject(5)
+    cek("int_x = 1 walau count 30", kirim and kirim[0].int_x == 1,
+        str([(p.int_x, p.value) for p in kirim]))
+    cek("value tetap uid", kirim and kirim[0].value == 5,
+        str([(p.int_x, p.value) for p in kirim]))
+
+
+def test_echo_orang_lain_diabaikan() -> None:
+    bagian("7r. Echo netid orang lain TIDAK menyentuh stok/peta bot")
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.protocol import Tank
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 60, 60
+    for y in range(60):
+        for x in range(60):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
+    bot.world = w
+    bot.local = Player(netid=3, name="uji", posx=0.0, posy=0.0)
+    bot.inventory.items.clear()
+    bot.inventory.tambah(14, 10)
+
+    # Paket nyata: pemain lain (netid=2) menaruh Cave Background.
+    bot._apply_tile_change_echo(Tank(type=3, net_id=2, value=14,
+                                     int_x=54, int_y=25))
+    cek("stok bot tidak berkurang", bot.inventory.getItemCount(14) == 10,
+        str(bot.inventory.getItemCount(14)))
+    cek("peta bot tidak berubah", bot.world.tile(54, 25).fg == 0,
+        str(bot.world.tile(54, 25).fg))
+
+    # Place bot sendiri harus tetap dihitung.
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14,
+                                     int_x=45, int_y=17))
+    cek("place bot sendiri mengurangi stok",
+        bot.inventory.getItemCount(14) == 9, str(bot.inventory.getItemCount(14)))
+
+    # Pukulan orang lain juga tidak boleh menambah hit counter bot.
+    sebelum = bot.hit_count(50, 22)
+    bot._apply_damage(Tank(type=8, net_id=2, int_x=50, int_y=22, value=6))
+    cek("pukulan orang lain tidak dihitung",
+        bot.hit_count(50, 22) == sebelum, str(bot.hit_count(50, 22)))
+
+
+def test_place_door_mengurangi_stok() -> None:
+    bagian("7q. Echo place nyata (Door) mengurangi stok sampai 0")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 60, 60
+    for y in range(60):
+        for x in range(60):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
+    bot.world = w
+    from lucifer.bot import Player
+    bot.local = Player(netid=3, name="uji", posx=0.0, posy=0.0)
+    bot.inventory.items.clear()
+    bot.inventory.tambah(12, 1)
+
+    # Paket nyata: in type=3 netid=3 tile=(45,17) value=12(Door)
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, int_x=45, int_y=17, value=12))
+    cek("Door 1 -> 0 setelah place", bot.inventory.getItemCount(12) == 0,
+        str(bot.inventory.getItemCount(12)))
+    cek("Door tetap terdaftar (bukan hilang)", 12 in bot.inventory.items,
+        str(list(bot.inventory.items)))
+    cek("tile terisi Door di peta lokal", bot.world.tile(45, 17).fg == 12,
+        str(bot.world.tile(45, 17).fg))
+
+
 def test_echo_place_kurangi_inventory() -> None:
     bagian("7g. Echo TileChangeRequest (place) mengurangi stok")
     from lucifer.account import Account
@@ -1384,34 +1481,45 @@ def test_echo_place_kurangi_inventory() -> None:
 
     bot = Bot(account=Account(username="uji", password="", method="legacy",
                               label="uji"), label="uji")
+    from lucifer.bot import Player
+    from lucifer.world import Tile, World
+
+    w = World()
+    w.name, w.width, w.height = "UJI", 60, 60
+    for y in range(60):
+        for x in range(60):
+            w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
+    bot.world = w
+    bot.local = Player(netid=3, name="uji", posx=0.0, posy=0.0)
     bot.inventory.items.clear()
     bot.inventory.tambah(14, 5)
 
-    # Server echo: netid bot, value = item id yang berhasil ditaruh.
-    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    # Server echo: netid bot (3), value = item id yang berhasil ditaruh.
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14,
+                                     int_x=10, int_y=10))
     cek("place Cave Background -> stok 4",
         bot.inventory.getItemCount(14) == 4, str(bot.inventory.getItemCount(14)))
 
-    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14, int_x=10, int_y=10))
     cek("place kedua -> stok 3", bot.inventory.getItemCount(14) == 3)
 
     # Pukulan (Fist 18) BUKAN pemakaian item: stok tidak boleh turun.
-    bot._apply_tile_change_echo(Tank(type=3, value=18, int_x=10, int_y=10))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=18, int_x=10, int_y=10))
     cek("punch tidak mengurangi stok", bot.inventory.getItemCount(14) == 3,
         str(bot.inventory.getItemCount(14)))
 
     # Wrench (32) juga bukan pemakaian item.
-    bot._apply_tile_change_echo(Tank(type=3, value=32, int_x=10, int_y=10))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=32, int_x=10, int_y=10))
     cek("wrench tidak mengurangi stok", bot.inventory.getItemCount(14) == 3)
 
     # Stok 0: tidak boleh jadi negatif walau echo tetap datang.
     bot.inventory.kurangi(14, 3)
-    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=10, int_y=10))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14, int_x=10, int_y=10))
     cek("stok 0 tidak jadi negatif", bot.inventory.getItemCount(14) == 0,
         str(bot.inventory.getItemCount(14)))
 
     # Item yang tidak ada di inventaris diabaikan.
-    bot._apply_tile_change_echo(Tank(type=3, value=999, int_x=1, int_y=1))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=999, int_x=1, int_y=1))
     cek("item tak dikenal diabaikan", 999 not in bot.inventory.items)
 
     # Place juga harus memperbarui PETA lokal: tanpa itu bot tidak tahu ada
@@ -1424,7 +1532,7 @@ def test_echo_place_kurangi_inventory() -> None:
             w.tiles.append(Tile(x=x, y=y, fg=0, bg=14))
     bot.world = w
     bot.inventory.tambah(14, 3)
-    bot._apply_tile_change_echo(Tank(type=3, value=14, int_x=2, int_y=3))
+    bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14, int_x=2, int_y=3))
     t = w.tile(2, 3)
     cek("place mengisi peta lokal", t is not None and t.fg == 14,
         str(t))
@@ -1475,10 +1583,11 @@ def test_modify_inventory() -> None:
     cek("Dirt bertambah 5", bot.inventory.getItemCount(2) == 12,
         str(bot.inventory.getItemCount(2)))
 
-    # Habis = item dibuang dari daftar (bukan sisa 0 atau negatif).
+    # Habis = stok 0 tetapi item TETAP di daftar. Menghapusnya membuat item
+    # yang habis tampak "tidak pernah ada" di GUI.
     bot._apply_modify_inventory(Tank(type=13, value=2, jump_count=12))
-    cek("stok habis -> item hilang",
-        bot.inventory.getItemCount(2) == 0 and 2 not in bot.inventory.items,
+    cek("stok habis -> tetap terdaftar dengan 0",
+        bot.inventory.getItemCount(2) == 0 and 2 in bot.inventory.items,
         str(bot.inventory.items))
 
     # Item baru yang belum pernah ada.
@@ -1592,6 +1701,8 @@ def main() -> int:
                test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,
                test_autocollect_uid_dipakai_ulang, test_collected_dengan_kode_warna,
+               test_place_door_mengurangi_stok, test_echo_orang_lain_diabaikan,
+               test_collect_int_x_bukan_count,
                test_google_oauth, test_google_state_wajib,
                test_pisah_code_state, test_token_dari_halaman,
                test_relay_udp):

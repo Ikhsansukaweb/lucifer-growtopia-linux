@@ -280,6 +280,9 @@ class AutoFarm:
         self._baru_kosong: set[tuple[int, int]] = set()
         # Kesalahan siklus terakhir (dulu ditelan `except: pass`).
         self.error_terakhir = ""
+        # Alasan siklus terakhir tidak melakukan apa pun (stok habis, tile
+        # kosong, dst). Ditampilkan di GUI supaya tidak terlihat "diam".
+        self.alasan_diam = ""
         self._s = _Siklus("autofarm")
 
     # -- sasaran --------------------------------------------------------- #
@@ -713,10 +716,27 @@ class AutoFarm:
         daripada mengulang paket yang tak pernah diproses.
         """
         blok = self.block_id or self._blok_terakhir
-        if not self.do_place or not blok:
+        if not self.do_place:
+            self.alasan_diam = "do_place mati"
             return 0
+        if not blok:
+            self.alasan_diam = "block_id belum diset"
+            return 0
+        # Stok habis = penyebab paling sering "bot diam". Laporkan, jangan
+        # diam saja: pengguna tidak bisa membedakan stok habis dari bug.
+        if self.bot.inventory.getItemCount(blok) <= 0:
+            nama = (self.bot.items_db.name_of(blok)
+                    if getattr(self.bot, "items_db", None) else f"#{blok}")
+            self.alasan_diam = f"stok {nama} (#{blok}) habis — tidak bisa place"
+            return 0
+        self.alasan_diam = ""
         n = 0
-        for t in self._urut_dekat(self.kosong_siklus()):
+        kandidat = self.kosong_siklus()
+        if not kandidat:
+            self.alasan_diam = ("tidak ada tile sasaran yang kosong "
+                                "(target_tiles kosong / belum ada blok pecah)")
+            return 0
+        for t in self._urut_dekat(kandidat):
             if self._s._stop.is_set() or self.bot.status != BotStatus.online:
                 break
             if self.bot.inventory.getItemCount(blok) <= 0:
@@ -874,6 +894,7 @@ class AutoFarm:
             "tiles": len(self.target_tiles),
             "siap_pecah": len(self.siap_pecah()) if self.bot.world.tiles else 0,
             "error": self.error_terakhir,
+            "alasan_diam": self.alasan_diam,
             "kosong": len(self.kosong()) if self.bot.world.tiles else 0,
             "siklus": len(self.siklus),
             "dipecah_total": self.dipeeah_total,

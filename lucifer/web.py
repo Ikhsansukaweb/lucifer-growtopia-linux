@@ -1194,6 +1194,7 @@ class Handler(BaseHTTPRequestHandler):
         db = getattr(bot, "items_db", None) or (self.runner.items_db if self.runner else None)
         isi = []
         for it in bot.inventory.items.values():
+            # Sertakan item ber-stok 0 supaya kelihatan "habis", bukan hilang.
             nama = db.name_of(it.id) if db else ""
             isi.append({
                 "id": it.id,

@@ -202,8 +202,10 @@ class Inventory:
             return
         it.count -= int(jumlah)
         if it.count <= 0:
-            self.items.pop(int(item_id), None)
-            self.itemcount = len(self.items)
+            # JANGAN hapus dari daftar. Menghapus membuat item yang habis
+            # tampak "tidak pernah ada" di GUI sehingga sulit dibedakan dari
+            # bug. Simpan sebagai 0; `tambah()` akan menaikkannya lagi.
+            it.count = 0
 
     # alias sesuai docs Lucifer
     findItem = getItemCount
@@ -1240,6 +1242,12 @@ class Bot:
         (bukan jumlah total). Kita hanya butuh tahu tile mana yang kena,
         lalu hitungan sendiri dinaikkan satu.
         """
+        # Hanya pukulan KITA. Server menyiarkan `TileApplyDamage` pemain lain
+        # juga; tanpa filter, hitungan pukulan bot menjadi salah dan
+        # autofarm bisa menyimpulkan blok pecah padahal belum.
+        if self.local is not None and int(tank.net_id) not in (
+                0, int(self.local.netid)):
+            return
         key = (int(tank.int_x), int(tank.int_y))
         if key[0] < 0 or key[1] < 0:
             return
@@ -1368,6 +1376,20 @@ class Bot:
         if item_id <= 0:
             return
         x, y = int(tank.int_x), int(tank.int_y)
+
+        # WAJIB: echo milik kita sendiri saja.
+        #
+        # Server menyiarkan `TileChangeRequest` pemain LAIN juga. Tanpa filter
+        # ini, place orang lain ikut mengurangi stok bot (dan pukulan orang
+        # lain ikut mengosongkan peta lokal bot).
+        #
+        # Bukti dari log:
+        #   in type=3 netid=2 tile=(54,25) value=14  <- pemain lain
+        #   in type=3 netid=3 tile=(45,17) value=12  <- bot (netid 3)
+        if self.local is not None and int(tank.net_id) != int(self.local.netid):
+            return
+        if self.local is None:
+            return
         if item_id in (ITEM_FIST, ITEM_WRENCH):
             # `value == 18` (Fist) pada echo = server menyatakan BLOK PECAH.
             #
@@ -2349,7 +2371,10 @@ class Bot:
                 value=int(d.uid),
                 vector_x=float(d.x),
                 vector_y=float(d.y),
-                int_x=int(d.count),
+                # `int_x` = `invbit` objek (0/1), BUKAN jumlah item.
+                # Bukti dari log: Dirt Seed count=1 -> int_x=1 -> BERHASIL;
+                # Cave Background count=30 -> int_x=30 -> server DIAM.
+                int_x=1 if d.count > 0 else 0,
             )
         )
 
