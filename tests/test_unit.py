@@ -1375,6 +1375,40 @@ def test_uid_drop_dari_counter() -> None:
             f"{sebelum} -> {bot.inventory.count_of(14)}")
 
 
+def test_tile_change_saring_jangkau_dan_jeda() -> None:
+    bagian("7w. tileChange: tolak tile jauh, jeda antar pukul")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import Bot, JEDA_MIN_TILE_S, Player
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    out = []
+    bot.send_raw = lambda p, ext=b"": out.append(p) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=0.0, posy=736.0)
+
+    # Bukti jurnal: 29 pukulan tile=(63,18) dari pemain di tile (65,23)
+    # (dy=5) tidak pernah dibalas server. Paket tidak boleh dikirim.
+    cek("tile di luar 4 tidak dikirim", bot.hit(63, 18) is False,
+        str(len(out)))
+    cek("penghitung tolak naik", bot._tile_ditolak == 1,
+        str(bot._tile_ditolak))
+
+    # Pukul tile sah: dua paket (State + TileChange) terkirim.
+    t0 = time.time()
+    cek("tile dekat dikirim", bot.hit(0, 24) is True)
+    cek("State + TileChange", [int(p.type) for p in out] == [0, 3],
+        str([int(p.type) for p in out]))
+
+    # Pukulan berikutnya harus menunggu jeda minimum, bukan dibuang.
+    out.clear()
+    bot.hit(0, 24)
+    jeda = time.time() - t0
+    cek("pukulan kedua tetap terkirim", len(out) == 2, str(len(out)))
+    cek(f"jeda >= {JEDA_MIN_TILE_S:.2f}s", jeda >= JEDA_MIN_TILE_S,
+        f"{jeda:.2f}s")
+
+
 def test_state_identik_tidak_spam_log() -> None:
     bagian("7v. State posisi sama tidak memenuhi jurnal")
     from lucifer.account import Account
@@ -1849,6 +1883,7 @@ def main() -> int:
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
+               test_tile_change_saring_jangkau_dan_jeda,
                test_state_identik_tidak_spam_log,
                test_alias_growlauncher_pascalcase,
                test_echo_break_hapus_background,

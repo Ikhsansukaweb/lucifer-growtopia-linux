@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .bot import Bot, BotStatus
+from .bot import Bot, BotStatus, JANGKAU_TILE
 from .world import Tile, World
 
 __all__ = [
@@ -149,7 +149,8 @@ def _tunggu(stop: threading.Event, detik: float) -> bool:
 # AutoFarm
 # --------------------------------------------------------------------------- #
 # Jangkauan `tileChange`: klien asli menolak tile > 4 dari pemain.
-JANGKAU_TILE = 4
+# Satu sumber: `Bot.JANGKAU_TILE` (dipakai `_tile_change` untuk menyaring
+# paket dari fitur maupun skrip Lua).
 
 
 def dalam_jangkau(bot: Bot, t: Tile, jangkau: int = JANGKAU_TILE) -> bool:

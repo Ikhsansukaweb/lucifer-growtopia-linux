@@ -7,9 +7,10 @@
 -- CONFIG
 -------------------------
 local DELAY_BREAK = 140
+local MAX_COBA = 8
 
 local WORLD_LIST = {
-    "yhucdf", -- ganti nama world lo
+    "jejehj", -- ganti nama world lo
 }
 
 -------------------------
@@ -58,16 +59,24 @@ local function clearWorld()
         for x = 0, 99 do
             local tile = GetTile(x, y)
 
-            if not tile.extra
+            if tile and not tile.extra
             and (tile.bg ~= 0 or tile.fg % 2 == 1)
             and tile.fg ~= 8 then
 
                 safePath(x, y - 1)
 
-                while GetTile(x, y).fg ~= 0
-                   or GetTile(x, y).bg ~= 0 do
+                -- Batas percobaan: kalau server diam (blok tidak pecah),
+                -- berhenti. Tanpa ini `while` berputar selamanya menembak
+                -- tile yang sama dan server membalas dengan blokir.
+                local coba = 0
+                while (GetTile(x, y).fg ~= 0
+                   or GetTile(x, y).bg ~= 0) and coba < MAX_COBA do
                     punch(x, y)
                     randomSleep(DELAY_BREAK)
+                    coba = coba + 1
+                end
+                if coba >= MAX_COBA then
+                    log("Lewati (server diam)", x, y)
                 end
             end
         end

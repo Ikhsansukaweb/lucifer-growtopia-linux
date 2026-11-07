@@ -73,6 +73,14 @@ _PesanServer = PesanServer  # nama internal pendek
 
 TILE_ACTIVATE_WRENCH = ITEM_WRENCH  # type 3 `value`, bukan type 7
 
+# Batas `tileChange`: klien asli menolak tile > 4 dari pemain, dan server
+# membalas DIAM (tanpa `TileApplyDamage` / echo `TileChangeRequest`) untuk
+# paket di luar jangkauan maupun yang datang terlalu rapat. Akibatnya pukulan
+# terlihat "tidak masuk" padahal terkirim. Saring di sini supaya semua jalur
+# (fitur otomasi DAN skrip Lua lewat `sendPacketRaw`) ikut terlindungi.
+JANGKAU_TILE = 4
+JEDA_MIN_TILE_S = 0.30
+
 
 class BotStatus:
     """Status bot — nilainya sama dengan enum BotStatus di Lucifer."""
@@ -437,6 +445,11 @@ class Bot:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._last_ping_ts = 0.0
+        # Throttle `tileChange` (lihat `_tile_change`). Dua paket pukul/taruh
+        # lebih rapat dari JEDA_MIN_TILE_S dibuang server tanpa kabar, jadi
+        # jalur Lua yang menembak 140 ms tidak pernah diproses.
+        self._tile_terakhir_ts = 0.0
+        self._tile_ditolak = 0
         self._last_server_msg = ""
         self._connected_at = 0.0
         self._action_log: collections.deque[str] = collections.deque(maxlen=200)
@@ -2251,6 +2264,31 @@ class Bot:
         dan menolak paket tanpa posisi. Tile kosong atau bibit memakai posisi
         tile (seperti library deltaX), selain itu posisi pemain.
         """
+        # -- saring jangkauan + laju (berlaku untuk SEMUA jalur) ----------- #
+        # Bukti jurnal: 29 pukulan tile=(63,18) dari pemain di tile (65,23)
+        # (dy=5) tidak menghasilkan satu pun `TileApplyDamage`; 82 pukulan
+        # berikutnya ke tile=(0,24) juga tidak dibalas. Server menolak diam
+        # untuk tile di luar 4 dan untuk paket yang datang > ~3/detik.
+        if self.local is not None:
+            cx, cy = self.local.posx + 10, self.local.posy + 15
+            tx, ty = int(x) * 32 + 16, int(y) * 32 + 16
+            if (tx - cx) ** 2 + (ty - cy) ** 2 > (32 * JANGKAU_TILE) ** 2:
+                self._tile_ditolak += 1
+                if self._tile_ditolak in (1, 10, 100, 1000):
+                    log.warning(
+                        "[%s] tileChange di luar jangkauan tile=(%s,%s) "
+                        "pemain=(%.0f,%.0f) — tidak dikirim (%d×)",
+                        self.label, x, y, self.local.posx, self.local.posy,
+                        self._tile_ditolak,
+                    )
+                return False
+        # Jeda minimum antar tileChange. Ditunggu, BUKAN dibuang, supaya
+        # skrip Lua yang menembak 140 ms tetap menyelesaikan semua tile.
+        sisa = JEDA_MIN_TILE_S - (time.time() - self._tile_terakhir_ts)
+        if sisa > 0:
+            time.sleep(sisa)
+        self._tile_terakhir_ts = time.time()
+
         px, py = float(x * 32), float(y * 32)
         # Posisi paket = posisi PEMAIN, selalu. Bukan posisi tile.
         #
