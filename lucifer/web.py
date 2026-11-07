@@ -817,12 +817,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- util -------------------------------------------------------------- #
     def _send(self, code: int, body: bytes, ctype: str = "application/json") -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", ctype + "; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        # Klien (GUI/curl) sering menutup koneksi lebih dulu saat perintah
+        # lama (mis. `warp` menunggu SendMapData sampai 10 detik). Menulis
+        # balasan ke socket mati melempar BrokenPipeError dan membanjiri
+        # log dengan traceback yang menyesatkan — seolah server crash,
+        # padahal prosesnya sehat.
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype + "; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _json(self, obj, code: int = 200) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False, default=str).encode())

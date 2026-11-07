@@ -9,7 +9,7 @@
 local DELAY_BREAK = 140
 
 local WORLD_LIST = {
-    "okqsr", -- ganti nama world lo
+    "yhucdf", -- ganti nama world lo
 }
 
 -------------------------

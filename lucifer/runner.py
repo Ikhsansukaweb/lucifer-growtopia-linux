@@ -573,7 +573,17 @@ class Runner:
                 return {"ok": True, "loaded": loaded}
             return {"ok": False, "error": "engine belum siap"}
         if cmd == "run" and len(parts) > 1:
-            return {"ok": self.run_script(parts[1]), "script": parts[1]}
+            # Skrip bisa jalan menit-menitan (loop tile, Sleep, listenEvents).
+            # Menjalankannya sinkron membuat HTTP request menggantung sampai
+            # klien menyerah -> BrokenPipeError. Jalankan di thread sendiri.
+            nama = parts[1]
+
+            def jalan() -> None:
+                self.run_script(nama)
+
+            threading.Thread(target=jalan, name=f"skrip-{nama}",
+                             daemon=True).start()
+            return {"ok": True, "script": nama, "pesan": "skrip dijalankan"}
         if cmd == "stop":
             threading.Thread(target=self.stop, daemon=True).start()
             return {"ok": True, "message": "berhenti"}
