@@ -129,7 +129,7 @@ def _hit6(x, y):
     af6.pecah_dipanggil.append((x, y))
     # Server retail tidak mengirim type 5. Konfirmasi pecah = echo
     # `type=3 value=18`, persis seperti paket klien asli.
-    b6._apply_tile_change_echo(_Tank6(type=3, value=18, int_x=x, int_y=y))
+    b6._apply_tile_change_echo(_Tank6(type=3, net_id=1, value=18, int_x=x, int_y=y))
     kosong6.append(b6.world.tile(x, y).fg)
     return True
 
@@ -207,7 +207,8 @@ def _hit_pecah(x, y):
     n = sum(1 for a in _j9 if a[0] == "hit")
     # Pukulan diterima -> TileApplyDamage. Setelah 3, server meng-echo
     # `type=3 value=18` = blok pecah (persis seperti klien asli).
-    b9._apply_damage(type("T", (), {"int_x": x, "int_y": y, "value": 6})())
+    b9._apply_damage(type("T", (), {"net_id": 1, "int_x": x, "int_y": y,
+                                    "value": 6})())
     if n >= 3:
         b9._aksi_ok[(x, y)] = ("break", 18, 0.0)
         t = b9.world.tile(x, y)
@@ -253,7 +254,8 @@ def _hit17(x, y):
     _h17.append(1)
     # Pukulan diterima -> damage. Setelah itu server echo `value=18` = pecah.
     if len(_h17) <= 2:
-        b17._apply_damage(type("T", (), {"int_x": x, "int_y": y, "value": 6})())
+        b17._apply_damage(type("T", (), {"net_id": 1, "int_x": x, "int_y": y,
+                                         "value": 6})())
     else:
         b17._aksi_ok[(x, y)] = ("break", 18, 0.0)
         b17.world.tile(x, y).fg = 0

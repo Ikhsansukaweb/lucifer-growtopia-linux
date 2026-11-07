@@ -180,12 +180,16 @@ def tank_value(t: int, value: int, item_db: Any = None, nid: int = 0) -> str:
     return str(value)
 
 
-def aksi(t: int, value: int = 0) -> str:
+def aksi(t: int, value: int = 0, nid: int = 0) -> str:
     """Arti satu paket dalam bahasa manusia."""
     t = int(t)
     if t == 3:
         return "PLACE" if int(value) not in (18, 32, 0) else (
             "PUKUL" if int(value) == 18 else "WRENCH" if int(value) == 32 else "?")
+    if t == 14:
+        art = item_change_arti(nid)
+        return "objek DITUMPUK" if art["target_net_id"] == "uid" else (
+            "objek BARU" if art["value"] == "item" else "objek DIAMBIL")
     return AKSI_TANK.get(t, "")
 
 
@@ -201,12 +205,21 @@ def ringkas_tank(t: Any, item_db: Any = None) -> str:
     bagian = [f"type={tt}({tank_type(tt)})"]
     if g("net_id"):
         bagian.append(f"netid={netid(g('net_id'))}")
-    # `target_net_id` = UID objek untuk ItemChangeObject. Tanpa ini log
-    # membingungkan: uid tidak kelihatan, `value` disangka item id.
-    uid_obj = g("target_net_id")
-    if uid_obj and uid_obj > 0 and uid_obj < 0x7FFFFFFF:
-        bagian.append(f"uid={uid_obj}")
-    if g("int_x") or g("int_y"):
+    # `target_net_id` artinya BERBEDA per tipe/netid — lihat `item_change_arti`.
+    # Menulis "uid=" untuk semua paket (versi lama) menyesatkan: pada type 14
+    # netid ALL field itu netid pemain yang menjatuhkan, BUKAN uid objek.
+    tn = g("target_net_id")
+    if tn and 0 < tn < 0x7FFFFFFF:
+        if tt == 14:
+            art = item_change_arti(g("net_id"))
+            if art["target_net_id"] == "uid":
+                bagian.append(f"uid={tn}")
+            else:
+                bagian.append(f"dropper_netid={netid(tn)}")
+    if tt == 11:
+        # `int_x` pada type 11 = jumlah item (invbit), bukan koordinat.
+        bagian.append(f"count={int(g('int_x'))}")
+    if (g("int_x") or g("int_y")) and tt != 11:
         bagian.append(f"tile=({int(g('int_x'))},{int(g('int_y'))})")
     if g("vector_x") or g("vector_y"):
         bagian.append(f"pos=({g('vector_x'):.0f},{g('vector_y'):.0f})")
@@ -223,7 +236,93 @@ def ringkas_tank(t: Any, item_db: Any = None) -> str:
         bagian.append(f"jump={g('jump_count')}")
     if g("flags"):
         bagian.append(f"flags={flags(g('flags'))}")
-    arti = aksi(tt, g("value"))
+    arti = aksi(tt, g("value"), g("net_id"))
     if arti:
         bagian.append(f"-> {arti}")
     return " ".join(bagian)
+
+# ===========================================================================
+# PEMETAAN FIELD TANK -> ARTI, per tipe paket
+# ===========================================================================
+# Satu sumber kebenaran. Sebelumnya arti `value`/`netid`/`uid` ditafsirkan
+# berbeda-beda di beberapa tempat sehingga sering tertukar.
+#
+# Layout struct (lucifer/protocol.py, 56 byte little-endian):
+#   offset  0  type          u8
+#   offset  4  net_id        u32   <- Gurotopia `.netid`
+#   offset  8  target_net_id i32   <- Gurotopia `.uid`
+#   offset 12  flags         u32   <- Gurotopia `.state`
+#   offset 16  float_variable f32  <- Gurotopia `.count`
+#   offset 20  value         u32   <- Gurotopia `.id`
+#   offset 24  vector_x      f32   <- Gurotopia `.pos.x`   (piksel)
+#   offset 28  vector_y      f32
+#   offset 44  int_x         i32   <- Gurotopia `.punch.x` (tile)
+#   offset 48  int_y         i32
+
+# Arti tiap field, per tipe tank.
+#   "item"  = id item
+#   "uid"   = uid objek
+#   "netid" = netid pemain
+#   "count" = jumlah item
+#   "tile"  = koordinat tile
+#   "px"    = koordinat piksel
+TANK_ARTI: dict[int, dict[str, str]] = {
+    # Server meng-echo aksi kita. value = item id (18 = pukul = blok pecah).
+    3: {"value": "item", "net_id": "netid", "int_x": "tile", "int_y": "tile",
+        "vector_x": "px", "vector_y": "px"},
+    # Pukulan diterima. value = nilai damage mentah, BUKAN item id.
+    8: {"value": "damage", "net_id": "netid", "int_x": "tile", "int_y": "tile"},
+    # Ambil objek. value = UID OBJEK. int_x = jumlah item (invbit deltaX).
+    11: {"value": "uid", "int_x": "count", "vector_x": "px", "vector_y": "px",
+         "net_id": "netid"},
+    # Objek muncul/hilang.
+    #   netid ALL(-1) / MERGE(-3): value = ITEM ID, target_net_id = uid
+    #   netid pemain            : value = UID OBJEK, target_net_id = netid
+    14: {"net_id": "penanda", "value": "bedakan", "target_net_id": "uid",
+         "float_variable": "count", "vector_x": "px", "vector_y": "px"},
+    # Stok satu item naik/turun. value = item id.
+    13: {"value": "item"},
+    # Posisi/gerak. vector = piksel.
+    0: {"net_id": "netid", "vector_x": "px", "vector_y": "px"},
+    20: {"net_id": "netid", "vector_x": "px", "vector_y": "px"},
+}
+
+
+def arti_field(tipe: int, field: str) -> str:
+    """Arti satu field untuk tipe tank tertentu ('item'/'uid'/'netid'/...)."""
+    return TANK_ARTI.get(int(tipe), {}).get(field, "?")
+
+
+MERGE_NETID = (0xFFFFFFFD, -3)
+ALL_NETID = (0xFFFFFFFF, -1)
+
+
+def item_change_arti(net_id: int) -> dict[str, str]:
+    """Arti field `ItemChangeObject` (type 14) menurut `net_id`.
+
+    Tiga bentuk dalam satu tipe paket:
+
+        netid ALL(-1)     objek BARU
+                          value          = item id
+                          target_net_id  = netid pemain yang menjatuhkan
+                          float_variable = jumlah item
+        netid MERGE(-3)   objek DITUMPUK
+                          value          = item id
+                          target_net_id  = uid objek yang ditumpuk
+                          float_variable = jumlah TOTAL
+        netid pemain      objek DIAMBIL
+                          value          = uid objek
+                          target_net_id  = netid pemain
+
+    Bukti: tiga drop berbeda (Rock Seed, Cave BG, Dirt Seed) semuanya
+    mengirim `target_net_id=5` = netid pemain lain. Saat rejoin,
+    `SendMapData` memberi uid asli 10, 11, 12.
+    """
+    n = int(net_id)
+    if n in MERGE_NETID:
+        return {"value": "item", "target_net_id": "uid",
+                "float_variable": "count"}
+    if n in ALL_NETID:
+        return {"value": "item", "target_net_id": "netid",
+                "float_variable": "count"}
+    return {"value": "uid", "target_net_id": "netid"}

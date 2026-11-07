@@ -1635,149 +1635,111 @@ class Bot:
                          daemon=True).start()
 
     def _apply_item_change(self, tank: Tank, ext: bytes) -> None:
-        """ItemChangeObject (type 14): item muncul/hilang di dunia.
+        """`ItemChangeObject` (type 14): objek muncul, ditumpuk, atau diambil.
 
-        TERVERIFIKASI dari paket nyata (bukan tebakan):
+        Arti field bergantung pada `net_id` — lihat `nama.item_change_arti`:
 
-            netid = 0xFFFFFFFF (-1)  -> objek BARU muncul
-            netid = <netid pemain>   -> objek DIAMBIL pemain itu
+            netid -1 (ALL)   objek BARU
+                             value            = item id
+                             target_net_id    = netid pemain yang menjatuhkan
+                             float_variable   = jumlah item
+            netid -3 (MERGE) objek DITUMPUK
+                             value            = item id
+                             target_net_id    = uid objek yang ditumpuk
+                             float_variable   = jumlah TOTAL (bukan tambahan)
+            netid pemain     objek DIAMBIL pemain itu
+                             value            = uid objek
+                             target_net_id    = netid pemain
 
-        Datanya ada di FIELD TANK, bukan extended (`ext=0` di semua paket):
+        UID objek baru TIDAK dikirim server pada paket ALL — ditiru dari
+        counter (`last_uid + 1`, sama seperti `++world.last_object_uid` di
+        Gurotopia). Terverifikasi: tiga drop berurutan menjadi uid 10, 11, 12,
+        persis uid yang diberikan `SendMapData` saat rejoin.
 
-            value      = uid objek (bukan item id)
-            vector_x/y = posisi piksel
-
-        Contoh nyata:
-            type=14 netid=-1 pos=(1404,742) value=3    -> item jatuh
-            type=14 netid=6  value=11                  -> bot ambil (uid 11)
-
-        Tanpa handler ini `world.dropped` tidak pernah mengecil, jadi
-        autocollect mengirim ulang uid yang sudah tidak ada dan berhenti
-        setelah satu item.
+        Nilai uid juga dipakai ulang server untuk objek lain, jadi `item_id`
+        dan batas percobaan harus ikut di-reset tiap kali uid muncul lagi.
         """
         try:
-            uid = int(tank.value)
-            if not uid:
-                return
-            if int(tank.net_id) in (-1, 0xFFFFFFFF, -3, 0xFFFFFFFD):
-                x, y = float(tank.vector_x), float(tank.vector_y)
-                # Layout asli `ItemChangeObject` (Gurotopia
-                # `database/world.cpp:add_object` + `merge_object`):
-                #
-                #   netid            = -1 (baru) atau -3 (digabung ke objek lama)
-                #   target_net_id    = UID objek          <- BUKAN dikarang sendiri
-                #   float_variable   = JUMLAH item        <- BUKAN selalu 1
-                #   value            = item id
-                #   vector_x/y       = posisi piksel
-                #
-                # Versi lama mengarang uid dari `last_uid + 1` dan selalu
-                # memakai count=1. Akibatnya drop 80 blok hanya terbaca 1, dan
-                # uid yang dipakai `ItemActivateObjectRequest` tidak cocok
-                # dengan yang dipegang server sehingga pengambilan gagal.
-                item_id = int(tank.value)
-                jumlah = int(tank.float_variable)
-                if jumlah <= 0:
-                    jumlah = 1
-                # UID objek. Hasil decode byte-per-byte dari paket retail:
-                #
-                #   drop   : netid=-1  uid=-1 (hampir selalu)  value=item id
-                #   diambil: netid=pemain  uid=-1              value=uid objek
-                #
-                # Server TIDAK mengirim uid pada drop, tetapi paket pickup
-                # memakai uid. Jadi counter server harus DITIRU: `last_uid`
-                # dari SendMapData, lalu naik satu tiap objek baru
-                # (Gurotopia: `++world.last_object_uid`). Kalau server
-                # kebetulan memberi uid (ada 1 kasus: uid=17), pakai itu.
-                # UID objek. Bukti dari decode paket:
-                #
-                #   drop baru  : target_net_id = -1 (server TIDAK memberi uid)
-                #   pickup     : value = uid  (mis. 15, 40)
-                #
-                # uid TIDAK BISA dikarang: percobaan memakai `last_uid + 1`
-                # menghasilkan uid=2 untuk objek yang uid aslinya 15, dan
-                # server menolak setiap `ItemActivateObjectRequest` untuk uid
-                # yang salah (tidak ada balasan sama sekali).
-                #
-                # Jadi objek tanpa uid tidak bisa diambil lewat type 11.
-                # Ditandai uid=0 dan diambil dengan cara lain (menimpa item
-                # dengan berjalan ke posisinya, seperti pemain manusia).
-                uid_asli = int(tank.target_net_id)
-                if uid_asli <= 0 or uid_asli >= 0x7FFFFFFF:
-                    uid_asli = 0
-                elif uid_asli > int(self.world.last_uid):
-                    self.world.last_uid = uid_asli
-
-                lama = next((o for o in self.world.dropped if o.uid == uid_asli), None)
-                if lama is not None:
-                    # `count` dari server adalah TOTAL objek itu, BUKAN
-                    # tambahan. Bukti dari paket merge (Growtopia HP):
-                    #   DROP uid=3 count=3, lalu 5, 6, 7  -> total berjalan
-                    # Gurotopia `merge_object()` juga mengirim
-                    # `count = object->count` (hasil penjumlahan di server),
-                    # jadi klien cukup menimpanya.
-                    lama.count = int(jumlah)
-                    lama.x, lama.y = x, y
-                    self._emit("dropped", uid_asli)
-                else:
-                    self.world.dropped.append(
-                        DroppedItem(item_id=item_id, x=x, y=y,
-                                    count=jumlah, uid=uid_asli))
-                    self._emit("dropped", uid_asli)
-                # uid boleh dipakai ulang untuk objek baru: bersihkan batas
-                # percobaan lama supaya objek baru tetap bisa diambil.
-                self._ambil_n.pop(int(uid_asli), None)
-                self._ambil_ts.pop(int(uid_asli), None)
-                # Ingat pasangan uid -> item id (dipakai saat pickup, karena
-                # paket pickup hanya membawa uid).
-                self._uid_item[int(uid_asli)] = int(item_id)
-                if len(self._uid_item) > 512:
-                    for k in list(self._uid_item)[:256]:
-                        self._uid_item.pop(k, None)
-                # Drop di tile X = blok di tile X baru saja pecah. Ini
-                # SATU-SATUNYA bukti pecah yang dikirim server (tidak ada
-                # paket tile-update untuk punch sendiri, dan `TileApplyDamage`
-                # hanya konfirmasi pukulan, sering kurang dari jumlah pukulan).
-                self._drop_baru.append((x, y, time.time()))
-                if len(self._drop_baru) > 64:
-                    del self._drop_baru[:32]
-                self.catat_paket("in", 14,
-                                 f"DROP uid={uid_asli} item_id={item_id} "
-                                 f"count={jumlah} pos=({x:.0f},{y:.0f}) "
-                                 f"radius={self.auto_collect_radius * 32}px "
-                                 f"auto={self.auto_collect}")
-                self._auto_ambil(uid_asli, x, y)
+            net_id = int(tank.net_id)
+            arti = N.item_change_arti(net_id)
+            if arti["value"] == "item":
+                self._item_change_drop(tank, net_id)
             else:
-                # netid = pemain yang mengambil. Kalau itu BOT SENDIRI, server
-                # tidak mengirim ulang inventaris (tidak ada type 9/13) — hanya
-                # pesan console. Jadi tambahkan sendiri dari data objek yang
-                # kita sudah tahu sebelumnya; bukan tebakan, server yang
-                # menyatakan objek ini berpindah ke kita.
-                diambil = next((o for o in self.world.dropped if o.uid == uid), None)
-                item_id_diambil = (diambil.item_id if diambil is not None
-                                   else self._uid_item.get(int(uid)))
-                self.world.dropped = [o for o in self.world.dropped if o.uid != uid]
-                self._emit("picked", uid)
-                # Paket pickup HANYA membawa uid, tidak membawa item id.
-                # Item id dicari dari daftar objek yang sudah kita ketahui
-                # (dari paket add_object sebelumnya). Kalau tidak ketemu,
-                # laporkan apa adanya — jangan menebak.
-                if item_id_diambil is not None:
-                    nama_item = (self.items_db.name_of(item_id_diambil)
-                                 if self.items_db else f"#{item_id_diambil}")
-                    jumlah_ambil = diambil.count if diambil is not None else 1
-                    self.catat_paket("in", 0,
-                                     f"DIAMBIL uid={uid} item_id={item_id_diambil}"
-                                     f"({nama_item}) count={jumlah_ambil}")
-                else:
-                    self.catat_paket("in", 0,
-                                     f"DIAMBIL uid={uid} (item id belum pernah "
-                                     f"terlihat untuk uid ini)")
-                # JANGAN menambah stok di sini. Stok bertambah dari pesan
-                # resmi `Collected <n> <item>` (lihat `_baca_collected`).
-                # Menambah di dua tempat membuat stok dobel, dan `diambil`
-                # sering None karena uid tidak cocok.
+                self._item_change_pickup(int(tank.value))
         except Exception as e:  # noqa: BLE001
             log.debug("item change gagal: %s", e)
+
+    def _item_change_drop(self, tank: Tank, net_id: int) -> None:
+        """Objek baru / ditumpuk (netid ALL atau MERGE)."""
+        item_id = int(tank.value)
+        jumlah = int(tank.float_variable) or 1
+        x, y = float(tank.vector_x), float(tank.vector_y)
+
+        # MERGE: `target_net_id` memang uid objek yang ditumpuk.
+        uid = int(tank.target_net_id)
+        if net_id in N.MERGE_NETID:
+            lama = self._objek_uid(uid)
+            if lama is not None:
+                # `count` = jumlah TOTAL, bukan tambahan (bukti: 3, lalu 5,
+                # 6, 7 -> total berjalan; Gurotopia `merge_object` mengirim
+                # `object->count`).
+                lama.item_id, lama.count = item_id, jumlah
+                lama.x, lama.y = x, y
+                self._uid_item[uid] = item_id
+                self._emit("dropped", uid)
+                return
+        # ALL (atau MERGE yang objeknya tidak kita kenal): uid ditiru dari
+        # counter karena `target_net_id` berisi netid pemain yang menjatuhkan,
+        # BUKAN uid. Bukti: tiga item berbeda semuanya `target_net_id=5`
+        # (= netid pemain lain), sedangkan uid aslinya 10, 11, 12.
+        self.world.last_uid = int(self.world.last_uid) + 1
+        uid = int(self.world.last_uid)
+
+        lama = self._objek_uid(uid)
+        if lama is None:
+            lama = DroppedItem(item_id=item_id, x=x, y=y, count=jumlah, uid=uid)
+            self.world.dropped.append(lama)
+        else:
+            lama.item_id, lama.count = item_id, jumlah
+            lama.x, lama.y = x, y
+        # uid dipakai ulang -> reset item id & batas percobaan.
+        self._uid_item[uid] = item_id
+        self._ambil_n.pop(uid, None)
+        self._ambil_ts.pop(uid, None)
+        if len(self._uid_item) > 512:
+            for k in list(self._uid_item)[:256]:
+                self._uid_item.pop(k, None)
+        self._emit("dropped", uid)
+        self.catat_paket("in", 14,
+                         f"DROP uid={uid} item_id={item_id} count={jumlah} "
+                         f"pos=({x:.0f},{y:.0f}) "
+                         f"radius={self.auto_collect_radius * 32}px "
+                         f"auto={self.auto_collect}")
+        self._auto_ambil(uid, x, y)
+
+    def _objek_uid(self, uid: int) -> Optional[DroppedItem]:
+        """Objek di dunia dengan uid ini, atau None."""
+        return next((o for o in self.world.dropped if o.uid == uid), None)
+
+    def _item_change_pickup(self, uid: int) -> None:
+        """Objek diambil (netid = pemain). Paket hanya membawa uid."""
+        if not uid:
+            return
+        diambil = self._objek_uid(uid)
+        item_id = diambil.item_id if diambil is not None else self._uid_item.get(uid)
+        self.world.dropped = [o for o in self.world.dropped if o.uid != uid]
+        self._emit("picked", uid)
+        if item_id is None:
+            self.catat_paket("in", 0, f"DIAMBIL uid={uid} (item id tidak dikenal)")
+            return
+        nama_item = (self.items_db.name_of(item_id) if self.items_db
+                     else f"#{item_id}")
+        jumlah = diambil.count if diambil is not None else 1
+        self.catat_paket("in", 0,
+                         f"DIAMBIL uid={uid} item_id={item_id}({nama_item}) "
+                         f"count={jumlah}")
+        # Stok TIDAK ditambah di sini: `Collected <n> <item>` yang resmi
+        # (lihat `_baca_collected`). Menambah di dua tempat = stok dobel.
 
     def _apply_state(self, tank: Tank) -> None:
         """Posisi pemain dari paket `State` (type 0).
@@ -2358,6 +2320,11 @@ class Bot:
         yang benar.
         """
         self._emit("collect", oid)
+        # uid 0 / negatif = server tidak memberi uid (semua drop baru:
+        # `target_net_id` berisi netid pemain, bukan uid). Mengirim type 11
+        # dengan value=0 hanya membuang paket — server tidak pernah membalas.
+        if int(oid) <= 0:
+            return False
         d = next((o for o in self.world.dropped if o.uid == int(oid)), None)
         if d is None:
             return False
@@ -2371,10 +2338,10 @@ class Bot:
                 value=int(d.uid),
                 vector_x=float(d.x),
                 vector_y=float(d.y),
-                # `int_x` = `invbit` objek (0/1), BUKAN jumlah item.
-                # Bukti dari log: Dirt Seed count=1 -> int_x=1 -> BERHASIL;
-                # Cave Background count=30 -> int_x=30 -> server DIAM.
-                int_x=1 if d.count > 0 else 0,
+                # `int_x` = jumlah item (invbit). Dibuktikan log sukses:
+                #   out type=11 tile=(30,0) value=11 -> DIAMBIL uid=11 count=30
+                # Jadi count=30 HARUS dikirim sebagai int_x=30.
+                int_x=int(d.count),
             )
         )
 

@@ -542,10 +542,10 @@ def test_bot_aksi() -> None:
     bot._apply_item_change(
         _T2(type=14, net_id=0xFFFFFFFF, value=777,
             float_variable=1.0, vector_x=400.0, vector_y=360.0), b"")
-    # uid TIDAK dikarang: dibuktikan uid karangan (2) selalu ditolak server,
-    # sedangkan uid asli dari SendMapData (15) diterima.
-    cek("uid=-1 -> uid=0 (tidak dikarang)",
-        bot.world.dropped and bot.world.dropped[0].uid == 0,
+    # uid DITIRU dari counter. Terbukti: tiga drop berurutan menghasilkan
+    # 10, 11, 12 — sama dengan uid asli yang diberikan server saat rejoin.
+    cek("uid=-1 -> uid dari counter",
+        bot.world.dropped and bot.world.dropped[0].uid == 102,
         str([d.uid for d in bot.world.dropped]))
     cek("item id tetap dari value",
         bot.world.dropped and bot.world.dropped[0].item_id == 777,
@@ -1135,18 +1135,20 @@ def test_merge_drop_total_bukan_tambahan() -> None:
                  float_variable=float(count), vector_x=1822.0, vector_y=744.0),
             b"")
 
-    kirim(0xFFFFFFFF, 3, 3)
+    bot.world.last_uid = 2
+    kirim(0xFFFFFFFF, -1, 3)
     cek("drop awal count=3", bot.world.dropped[0].count == 3,
         str(bot.world.dropped[0].count))
+    uid_obj = bot.world.dropped[0].uid
     for c in (5, 6, 7):
-        kirim(0xFFFFFFFD, 3, c)   # netid MERGE
+        kirim(0xFFFFFFFD, uid_obj, c)   # netid MERGE memakai uid objek
     cek("merge count = total (7), bukan 3+5+6+7", bot.world.dropped[0].count == 7,
         str(bot.world.dropped[0].count))
     cek("tidak ada duplikat objek", len(bot.world.dropped) == 1,
         str(len(bot.world.dropped)))
 
     # Item berbeda = objek terpisah.
-    kirim(0xFFFFFFFF, 4, 1, item=112)
+    kirim(0xFFFFFFFF, -1, 1, item=112)
     cek("item lain jadi objek sendiri", len(bot.world.dropped) == 2,
         str(len(bot.world.dropped)))
 
@@ -1173,10 +1175,11 @@ def test_uid_ke_item_id_untuk_pickup() -> None:
         Tank(type=14, net_id=0xFFFFFFFF, target_net_id=-1, value=3,
              float_variable=1.0, vector_x=1618.0, vector_y=713.0,
              object_type=4), b"")
-    cek("drop tanpa uid -> uid=0",
-        [(d.uid, d.item_id) for d in bot.world.dropped] == [(0, 3)],
+    # uid ditiru dari counter: last_uid 0 -> uid 1 (terbukti cocok dengan
+    # uid asli server: tiga drop berurutan menjadi 10, 11, 12).
+    cek("drop -> uid dari counter",
+        [(d.uid, d.item_id) for d in bot.world.dropped] == [(1, 3)],
         str([(d.uid, d.item_id) for d in bot.world.dropped]))
-    # Isi peta seperti yang dilakukan SendMapData (server memberi uid).
     bot.world.dropped[0].uid = 15
     bot._uid_item[15] = 3
 
@@ -1304,6 +1307,74 @@ def test_arti_value_item_change_object() -> None:
         "uid=5" in hasil and "Lava" not in hasil, hasil)
 
 
+def test_tabel_arti_tank() -> None:
+    bagian("7t. Arti field tank: satu tabel, tidak ditafsir ulang")
+    from lucifer import nama as N
+
+    all_ = N.item_change_arti(0xFFFFFFFF)
+    cek("type14 ALL: value=item, target_net_id=netid",
+        all_["value"] == "item" and all_["target_net_id"] == "netid", str(all_))
+    merge = N.item_change_arti(0xFFFFFFFD)
+    cek("type14 MERGE: target_net_id=uid",
+        merge["value"] == "item" and merge["target_net_id"] == "uid", str(merge))
+    ambil = N.item_change_arti(6)
+    cek("type14 pemain: value=uid",
+        ambil["value"] == "uid" and ambil["target_net_id"] == "netid",
+        str(ambil))
+
+    # Log tidak boleh menyebut "uid=" untuk drop ALL (itu netid pemain).
+    from lucifer.protocol import Tank
+    baris = N.ringkas_tank(Tank(type=14, net_id=0xFFFFFFFF, target_net_id=5,
+                                value=2, float_variable=1.0,
+                                vector_x=1.0, vector_y=1.0))
+    cek("log drop ALL: dropper_netid, bukan uid", "dropper_netid=5" in baris
+        and "uid=5" not in baris, baris)
+
+    # type 11: int_x = jumlah item, bukan tile.
+    baris11 = N.ringkas_tank(Tank(type=11, value=10, int_x=30,
+                                  vector_x=1.0, vector_y=1.0))
+    cek("log type11: count=30, tanpa tile", "count=30" in baris11
+        and "tile=" not in baris11, baris11)
+
+
+def test_uid_drop_dari_counter() -> None:
+    bagian("7u. uid drop = counter server (bukan target_net_id)")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.world.last_uid = 9
+    # Tiga drop berbeda, semuanya target_net_id=5 (netid pemain lain).
+    for item, count in ((11, 1), (14, 30), (3, 1)):
+        bot._apply_item_change(
+            Tank(type=14, net_id=0xFFFFFFFF, target_net_id=5, value=item,
+                 float_variable=float(count), vector_x=100.0, vector_y=100.0),
+            b"")
+    uid = [(d.uid, d.item_id, d.count) for d in bot.world.dropped]
+    cek("uid berurutan 10,11,12 (cocok SendMapData)", uid ==
+        [(10, 11, 1), (11, 14, 30), (12, 3, 1)], str(uid))
+
+    # MERGE memakai uid asli dari target_net_id dan menimpa count (TOTAL).
+    bot._apply_item_change(
+        Tank(type=14, net_id=0xFFFFFFFD, target_net_id=11, value=14,
+             float_variable=7.0, vector_x=100.0, vector_y=100.0), b"")
+    obj = [(d.uid, d.item_id, d.count) for d in bot.world.dropped]
+    cek("merge uid=11 -> satu objek count 7", obj ==
+        [(10, 11, 1), (11, 14, 7), (12, 3, 1)], str(obj))
+
+    # Pickup membuang objek itu, tanpa menambah stok.
+    sebelum = bot.inventory.count_of(14) if hasattr(bot.inventory, "count_of") else None
+    bot._apply_item_change(
+        Tank(type=14, net_id=6, value=11, float_variable=1.0), b"")
+    sisa = [d.uid for d in bot.world.dropped]
+    cek("pickup uid=11 -> objek hilang", sisa == [10, 12], str(sisa))
+    if sebelum is not None:
+        cek("pickup tidak menambah stok", bot.inventory.count_of(14) == sebelum,
+            f"{sebelum} -> {bot.inventory.count_of(14)}")
+
+
 def test_echo_break_konfirmasi() -> None:
     bagian("7k. Echo type=3 value=18 = konfirmasi BLOK PECAH")
     from lucifer.account import Account
@@ -1397,7 +1468,8 @@ def test_collect_int_x_bukan_count() -> None:
     kirim = []
     bot.send_raw = lambda pkt, ext=b"": (kirim.append(pkt), True)[1]  # type: ignore[method-assign]
     bot.collectObject(5)
-    cek("int_x = 1 walau count 30", kirim and kirim[0].int_x == 1,
+    # Log sukses: `type=11 tile=(30,0) value=11` -> DIAMBIL count=30.
+    cek("int_x = count (30)", kirim and kirim[0].int_x == 30,
         str([(p.int_x, p.value) for p in kirim]))
     cek("value tetap uid", kirim and kirim[0].value == 5,
         str([(p.int_x, p.value) for p in kirim]))
@@ -1698,7 +1770,9 @@ def main() -> int:
                test_echo_place_kurangi_inventory, test_hit_counter,
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
-               test_arti_value_item_change_object, test_uid_ke_item_id_untuk_pickup,
+               test_arti_value_item_change_object, test_tabel_arti_tank,
+               test_uid_drop_dari_counter,
+               test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,
                test_autocollect_uid_dipakai_ulang, test_collected_dengan_kode_warna,
                test_place_door_mengurangi_stok, test_echo_orang_lain_diabaikan,

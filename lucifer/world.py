@@ -265,6 +265,11 @@ def parse_world(data: bytes, item_db=None) -> World:
             w.dropped.append(
                 DroppedItem(item_id=r.u16(), x=r.f32(), y=r.f32(), count=r.u8(), flags=r.u8(), uid=r.u32())
             )
+        # Jaga-jaga: counter tidak boleh lebih kecil dari uid objek yang sudah
+        # ada, kalau tidak objek baru akan memakai uid yang masih terpakai.
+        for o in w.dropped:
+            if o.uid > w.last_uid:
+                w.last_uid = o.uid
         w.base_weather = r.u16()
         r.u16()
         w.current_weather = r.u16()

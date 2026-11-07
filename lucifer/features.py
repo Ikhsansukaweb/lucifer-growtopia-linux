@@ -663,6 +663,8 @@ class AutoFarm:
                     continue
                 if d.item_id % 2 == 1 and not self.collect_seed:
                     continue
+                if not d.uid:
+                    continue    # tanpa uid, type 11 selalu ditolak
                 self.bot.collectObject(d.uid)
                 n += 1
                 if self.collect_delay:
