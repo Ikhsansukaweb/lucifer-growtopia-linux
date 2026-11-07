@@ -32,6 +32,10 @@ from . import nama as N
 from .protocol import NetGamePacket as G, NetMessage as M, Tank
 from .world import DroppedItem, Tile, World, parse_tile_updates, parse_world
 
+
+class _Lewati(Exception):
+    """Penanda: paket ini sengaja tidak dicatat ke jurnal (duplikat)."""
+
 log = logging.getLogger("lucifer.bot")
 
 # Nama paket untuk jurnal debug (mengikuti NetGamePacket).
@@ -398,6 +402,7 @@ class Bot:
         # dibalas server. Tanpa ini sapuan berkala mengirim type 11 selamanya.
         # Tile terakhir yang dituju untuk mengambil item tanpa uid.
         self._jalan_ts: dict[tuple[int, int], float] = {}
+        self._state_log: dict[int, tuple] = {}
         self._ambil_n: dict[int, int] = {}
         self._ambil_ts: dict[int, float] = {}
 
@@ -812,8 +817,20 @@ class Bot:
                         _var = f" fn={_vl.func_name()} arg1={str(_arg.as_string() if _arg else '')[:80]!r}"
                     except Exception:  # noqa: BLE001
                         _var = " fn=<gagal>"
+                # Pemain idle mengirim `State` dengan posisi sama terus
+                # (netid lain, tiap ~2 detik). Jangan penuhi jurnal dengan
+                # baris identik — simpan hanya saat posisi BERUBAH.
+                kunci = None
+                if int(_tk.type) == int(G.State):
+                    kunci = (int(_tk.net_id), round(_tk.vector_x),
+                             round(_tk.vector_y))
+                    if kunci == self._state_log.get(int(_tk.net_id)):
+                        raise _Lewati
+                    self._state_log[int(_tk.net_id)] = kunci
                 self.catat_paket("in", mtype,
                                  f"{self._ringkas_tank(_tk)} ext={len(_ext)} {_hex}{_var}")
+            except _Lewati:
+                pass
             except Exception:  # noqa: BLE001
                 self.catat_paket("in", mtype, f"tank rusak ({len(payload)} B)")
         elif mtype in (M.GenericText, M.GameMessage):

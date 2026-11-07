@@ -1375,6 +1375,34 @@ def test_uid_drop_dari_counter() -> None:
             f"{sebelum} -> {bot.inventory.count_of(14)}")
 
 
+def test_state_identik_tidak_spam_log() -> None:
+    bagian("7v. State posisi sama tidak memenuhi jurnal")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+    from lucifer.protocol import (Tank, NetGamePacket as G, NetMessage as M,
+                                  build_packet)
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+
+    def state(netid, x):
+        bot._handle_packet(build_packet(
+            M.GamePacket,
+            Tank(type=G.State, net_id=netid, vector_x=x, vector_y=706.0,
+                 flags=0x30).to_bytes()))
+
+    for _ in range(5):
+        state(8, 1211.0)          # pemain idle: posisi sama terus
+    n1 = len([p for p in bot.packet_log if "type=0" in p["isi"]])
+    cek("5 State identik -> 1 baris", n1 == 1, str(n1))
+    state(8, 1240.0)
+    cek("posisi berubah tetap dicatat",
+        len([p for p in bot.packet_log if "type=0" in p["isi"]]) == 2)
+    state(9, 1240.0)
+    cek("netid lain dicatat terpisah",
+        len([p for p in bot.packet_log if "type=0" in p["isi"]]) == 3)
+
+
 def test_echo_break_konfirmasi() -> None:
     bagian("7k. Echo type=3 value=18 = konfirmasi BLOK PECAH")
     from lucifer.account import Account
@@ -1771,6 +1799,7 @@ def main() -> int:
                test_posisi_tidak_memindah_bot,
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
+               test_state_identik_tidak_spam_log,
                test_uid_drop_dari_counter,
                test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,
