@@ -1403,6 +1403,56 @@ def test_state_identik_tidak_spam_log() -> None:
         len([p for p in bot.packet_log if "type=0" in p["isi"]]) == 3)
 
 
+def test_alias_growlauncher_pascalcase() -> None:
+    bagian("7w. Skrip GrowLauncher (PascalCase) jalan di Lucifer")
+    from lucifer.lua_api import LuaEngine
+
+    e = LuaEngine()
+    g = e.lua.globals()
+    for nama in ("GetLocal", "GetTile", "GetTiles", "SendPacketRaw",
+                 "SendPacket", "GetObjectList", "GetWorldTileMap",
+                 "GetCurrentWorldName", "GetInventory", "GetItemInfoByID",
+                 "FindPath", "LogToConsole", "Sleep"):
+        cek(f"global {nama} tersedia", g[nama] is not None,
+            "None")
+
+    # `//` (integer division) wajib jalan: dipakai `pos()` di skrip.
+    cek("operator // Lua", e.lua.execute("return 100 // 32") == 3)
+
+
+def test_echo_break_hapus_background() -> None:
+    bagian("7x. Pukulan kena background juga (clear-world)")
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.protocol import Tank
+    from lucifer.world import Tile, World
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    w = World()
+    w.name, w.width, w.height = "UJI", 10, 10
+    w.tiles = [Tile(x=x, y=y, fg=0, bg=0) for y in range(10) for x in range(10)]
+    bot.world = w
+    bot.local = Player(netid=1, name="uji", posx=0.0, posy=0.0)
+    bot.status = "online"
+
+    # foreground ada -> foreground dikosongkan, background tetap
+    w.tile(1, 1).fg, w.tile(1, 1).bg = 2, 14
+    bot._apply_tile_change_echo(Tank(type=3, net_id=1, value=18,
+                                     int_x=1, int_y=1))
+    cek("fg+bg -> fg=0 bg=14",
+        (w.tile(1, 1).fg, w.tile(1, 1).bg) == (0, 14),
+        str((w.tile(1, 1).fg, w.tile(1, 1).bg)))
+
+    # hanya background -> background dikosongkan (dulu: bot pukul selamanya)
+    w.tile(2, 2).fg, w.tile(2, 2).bg = 0, 14
+    bot._apply_tile_change_echo(Tank(type=3, net_id=1, value=18,
+                                     int_x=2, int_y=2))
+    cek("bg saja -> fg=0 bg=0",
+        (w.tile(2, 2).fg, w.tile(2, 2).bg) == (0, 0),
+        str((w.tile(2, 2).fg, w.tile(2, 2).bg)))
+
+
 def test_echo_break_konfirmasi() -> None:
     bagian("7k. Echo type=3 value=18 = konfirmasi BLOK PECAH")
     from lucifer.account import Account
@@ -1800,6 +1850,8 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_state_identik_tidak_spam_log,
+               test_alias_growlauncher_pascalcase,
+               test_echo_break_hapus_background,
                test_uid_drop_dari_counter,
                test_uid_ke_item_id_untuk_pickup,
                test_uid_item_dari_sendmapdata,

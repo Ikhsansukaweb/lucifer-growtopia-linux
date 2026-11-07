@@ -275,6 +275,13 @@ def pasang(engine) -> None:
         value = int(ambil("value"))
         if px is not None and py is not None:
             if ptype == 3:
+                # value 18 = Fist (pukul), 32 = Wrench, selain itu = place.
+                # Versi lama mengirim SEMUA type 3 lewat `place()`, jadi
+                # `_place_terakhir` terisi sampah saat skrip memukul.
+                if value == 18:
+                    return b.hit(int(px), int(py))
+                if value == 32:
+                    return b.wrench(int(px), int(py))
                 return b.place(int(px), int(py), value)
             if ptype == 7:
                 return b.hit(int(px), int(py))
@@ -473,3 +480,43 @@ def pasang(engine) -> None:
                 engine.lua.execute(p.read_text(encoding="utf-8"))
             except Exception as e:  # noqa: BLE001
                 engine.log_line(f"pustaka deltaX {nama} gagal dimuat: {e}")
+
+    # Banyak skrip publik ditulis untuk GrowLauncher, yang memakai nama
+    # PascalCase (`GetTile`, `GetLocal`, `SendPacketRaw`, ...). deltaX
+    # memakai camelCase. Keduanya menunjuk fungsi yang SAMA — tanpa alias,
+    # skrip GrowLauncher gagal di baris pertama dengan
+    # `attempt to call a nil value (global 'GetTile')`.
+    g = engine.lua.globals()
+    for pascal, camel in (
+        ("GetLocal", "getLocal"),
+        ("GetTile", "getTile"),
+        ("GetTiles", "getTiles"),
+        ("GetObjectList", "getObjectList"),
+        ("GetObjects", "getObjects"),
+        ("GetWorldTileMap", "getWorldTileMap"),
+        ("GetCurrentWorldName", "getCurrentWorldName"),
+        ("GetInventory", "GetInventory"),
+        ("GetItemInfoByID", "getItemInfoByID"),
+        ("GetItemInfoByName", "getItemInfoByName"),
+        ("SendPacket", "SendPacket"),
+        ("SendPacketRaw", "sendPacketRaw"),
+        ("SendVariant", "sendVariant"),
+        ("FindPath", "FindPath"),
+        ("LogToConsole", "LogToConsole"),
+        ("Sleep", "Sleep"),
+        ("CSleep", "CSleep"),
+        ("GetValue", "getValue"),
+        ("SetValue", "setValue"),
+        ("EditValue", "editValue"),
+        ("BindValue", "bindValue"),
+        ("AddHook", "addHook"),
+        ("RemoveHook", "removeHook"),
+        ("RunCoroutine", "runCoroutine"),
+        ("IsInside", "isInside"),
+        ("GetTime", "getTime"),
+    ):
+        # `GetInventory`/`SendPacket`/... sudah terdaftar dengan nama PascalCase;
+        # jangan timpa kalau sumbernya tidak ada.
+        sumber = g[camel]
+        if sumber is not None and g[pascal] is None:
+            g[pascal] = sumber

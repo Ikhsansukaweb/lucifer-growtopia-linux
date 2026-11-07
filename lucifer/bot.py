@@ -1418,7 +1418,16 @@ class Bot:
             # Jadi echo type=3 adalah konfirmasi NYATA untuk kedua aksi.
             lama = self.world.tile(x, y)
             if lama is not None and x >= 0 and y >= 0:
-                baru = Tile(x=x, y=y, fg=0, bg=lama.bg)
+                # Growtopia memukul FOREGROUND dulu; kalau tidak ada fg,
+                # pukulan mengenai BACKGROUND. Klien asli memakai aturan ini,
+                # dan skrip clear-world menunggu `fg == 0 and bg == 0`.
+                # Versi lama selalu mengosongkan fg, jadi tile yang hanya
+                # berisi background tidak pernah dianggap kosong dan bot
+                # memukulnya selamanya.
+                if lama.fg:
+                    baru = Tile(x=x, y=y, fg=0, bg=lama.bg)
+                else:
+                    baru = Tile(x=x, y=y, fg=0, bg=0)
                 self.world.update_tile(self.world.index_of(x, y), baru)
                 self._emit("tile_update", baru)
                 self._aksi_ok[(x, y)] = ("break", item_id, time.time())
