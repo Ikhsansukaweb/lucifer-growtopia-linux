@@ -1718,8 +1718,10 @@ def test_echo_orang_lain_diabaikan() -> None:
                                      int_x=54, int_y=25))
     cek("stok bot tidak berkurang", bot.inventory.getItemCount(14) == 10,
         str(bot.inventory.getItemCount(14)))
-    cek("peta bot tidak berubah", bot.world.tile(54, 25).fg == 0,
-        str(bot.world.tile(54, 25).fg))
+    # Peta WAJIB ikut berubah walau pelakunya pemain lain: tanpa ini bot
+    # buta terhadap perubahan dunia dan GUI tidak update.
+    cek("peta ikut ter-update oleh place pemain lain",
+        bot.world.tile(54, 25).fg == 14, str(bot.world.tile(54, 25).fg))
 
     # Place bot sendiri harus tetap dihitung.
     bot._apply_tile_change_echo(Tank(type=3, net_id=3, value=14,

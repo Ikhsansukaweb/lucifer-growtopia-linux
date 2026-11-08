@@ -69,6 +69,12 @@ class Runner:
         self._mtimes: dict[str, float] = {}
         self._log_buffer: list[str] = []
         self._log_lock = threading.Lock()
+        # Skrip yang sedang berjalan. HANYA SATU boleh jalan: dua skrip
+        # berebut `bot.local.posx`, posisi maju-mundur, dan server melihat
+        # gerakan mustahil -> shadowban. Bukti jurnal: 8 paket State dalam
+        # 1 detik dengan posisi 544->576->608->544 (lompat balik).
+        self._script_thread: Optional[threading.Thread] = None
+        self._script_nama = ""
         self._started_at = time.time()
 
     # ------------------------------------------------------------------ #
@@ -584,12 +590,25 @@ class Runner:
             # Menjalankannya sinkron membuat HTTP request menggantung sampai
             # klien menyerah -> BrokenPipeError. Jalankan di thread sendiri.
             nama = parts[1]
+            # Tolak skrip kedua yang masih hidup. Tanpa ini tiap klik
+            # "Jalankan" menambah thread dan semuanya menembak paket gerak
+            # ke bot yang sama.
+            if self._script_thread is not None and self._script_thread.is_alive():
+                return {"ok": False,
+                        "error": f"skrip '{self._script_nama}' masih berjalan — "
+                                 f"hentikan dulu (stopscript)"}
 
             def jalan() -> None:
-                self.run_script(nama)
+                try:
+                    self.run_script(nama)
+                finally:
+                    self._script_nama = ""
 
-            threading.Thread(target=jalan, name=f"skrip-{nama}",
-                             daemon=True).start()
+            th = threading.Thread(target=jalan, name=f"skrip-{nama}",
+                                  daemon=True)
+            self._script_thread = th
+            self._script_nama = nama
+            th.start()
             return {"ok": True, "script": nama, "pesan": "skrip dijalankan"}
         if cmd == "stop":
             threading.Thread(target=self.stop, daemon=True).start()

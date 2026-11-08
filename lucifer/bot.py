@@ -80,6 +80,17 @@ TILE_ACTIVATE_WRENCH = ITEM_WRENCH  # type 3 `value`, bukan type 7
 # (fitur otomasi DAN skrip Lua lewat `sendPacketRaw`) ikut terlindungi.
 JANGKAU_TILE = 4
 JEDA_MIN_TILE_S = 0.30
+# Rem paket gerak (`State`). Klien asli bergerak 123 px/detik = 1 tile per
+# 260 ms, jadi 120 ms masih di atas laju wajar. Nilai ini menahan dua skrip
+# yang jalan bersamaan dan gerakan bolak-balik cepat.
+MOVE_JEDA_MIN_S = 0.12
+MOVE_MIN_BALIK_S = 0.15
+# Batas "server masih hidup" untuk paket gerak. Growtopia TIDAK meng-echo
+# `State` milik sendiri (bukti jurnal: 111 paket gerak keluar, 0 balik), jadi
+# ack per-gerak tidak ada. Yang ada hanya heartbeat `PingRequest` setiap
+# ~4 detik. Kalau tidak ada paket masuk selama ini, berhenti mengirim State:
+# menembak koneksi mati itulah yang memicu shadowban/ercon.
+MOVE_TUNGGU_BALAS_S = 8.0
 # Berapa `tileChange` boleh dikirim tanpa satu pun balasan server sebelum
 # bot berhenti sendiri. 12 paket ≈ 4 detik pada jeda 300 ms.
 BATAS_TILE_TANPA_BALAS = 12
@@ -467,6 +478,17 @@ class Bot:
         # paket lain tetap masuk, tapi aksi kita tidak diproses.
         self._tile_tanpa_balas = 0
         self._tile_blokir_dilaporkan = False
+        # Rem paket gerak. Gerakan maju-mundur terlalu cepat terlihat sebagai
+        # speedhack/teleport oleh server dan berujung shadowban.
+        # Bukti jurnal 21:31:29: pos 544 -> 576 -> 608 -> 640 -> 544 dalam
+        # satu detik (lompat balik 3 tile).
+        self._move_terakhir_ts = 0.0
+        self._move_terakhir_pos = (0.0, 0.0)
+        self._move_arah = 0
+        self._move_ditolak = 0
+        # Penghitung gerak yang ditahan karena server tidak membalas.
+        self._gerak_ditahan = 0
+        self._gerak_tahan_dilaporkan = False
         # Throttle `tileChange` (lihat `_tile_change`). Dua paket pukul/taruh
         # lebih rapat dari JEDA_MIN_TILE_S dibuang server tanpa kabar, jadi
         # jalur Lua yang menembak 140 ms tidak pernah diproses.
@@ -823,6 +845,8 @@ class Bot:
     # ------------------------------------------------------------------ #
     def _handle_packet(self, raw: bytes) -> None:
         self._last_rx_ts = time.time()
+        # Ada paket masuk = koneksi masih hidup, izinkan gerak lagi.
+        self._gerak_tahan_dilaporkan = False
         mtype, payload = P.parse_packet(raw)
 
         # Rekam SEMUA paket masuk apa adanya (tipe pesan + payload) supaya
@@ -1456,66 +1480,56 @@ class Bot:
         if item_id <= 0:
             return
         x, y = int(tank.int_x), int(tank.int_y)
+        if x < 0 or y < 0:
+            return
 
-        # WAJIB: echo milik kita sendiri saja.
+        # Echo ini disiarkan untuk SEMUA pemain di dunia. Dua hal berbeda:
         #
-        # Server menyiarkan `TileChangeRequest` pemain LAIN juga. Tanpa filter
-        # ini, place orang lain ikut mengurangi stok bot (dan pukulan orang
-        # lain ikut mengosongkan peta lokal bot).
+        #   1. PETA harus ikut berubah untuk siapa pun pelakunya. Pemain lain
+        #      memasang/memecah blok -> tile di peta bot WAJIB berubah. Versi
+        #      lama `return` untuk netid lain, jadi peta bot buta terhadap
+        #      perubahan dunia oleh orang lain ("diemin doang, map ga update").
+        #   2. STOK + hitungan aksi hanya untuk echo milik bot sendiri.
         #
         # Bukti dari log:
-        #   in type=3 netid=2 tile=(54,25) value=14  <- pemain lain
-        #   in type=3 netid=3 tile=(45,17) value=12  <- bot (netid 3)
-        if self.local is not None and int(tank.net_id) != int(self.local.netid):
-            return
-        if self.local is None:
+        #   in type=3 netid=2 tile=(54,25) value=14  <- pemain lain place
+        #   in type=3 netid=3 tile=(45,17) value=12  <- bot place
+        milik_sendiri = (self.local is not None
+                         and int(tank.net_id) == int(self.local.netid))
+
+        # -- 1. peta: berlaku untuk semua ---------------------------------- #
+        if x < self.world.width and y < self.world.height:
+            lama = self.world.tile(x, y)
+            if lama is not None:
+                if item_id in (ITEM_FIST, ITEM_WRENCH):
+                    # Pukul: fg dulu, kalau fg kosong baru bg (aturan klien).
+                    baru = (Tile(x=x, y=y, fg=0, bg=lama.bg) if lama.fg
+                            else Tile(x=x, y=y, fg=0, bg=0))
+                else:
+                    baru = Tile(x=x, y=y, fg=item_id, bg=lama.bg,
+                                parent=lama.parent, flags=0)
+                self.world.update_tile(self.world.index_of(x, y), baru)
+                self._emit("tile_update", baru)
+
+        if not milik_sendiri:
             return
         # Echo milik bot sendiri = server masih memproses aksi kita.
         # Reset HARUS setelah filter netid: echo pemain lain tidak boleh
         # membuat bot mengira pukulannya diterima.
         self._tile_tanpa_balas = 0
         self._tile_blokir_dilaporkan = False
+        # -- 2. efek pada bot sendiri -------------------------------------- #
         if item_id in (ITEM_FIST, ITEM_WRENCH):
             # `value == 18` (Fist) pada echo = server menyatakan BLOK PECAH.
-            #
-            # Bukti dari klien asli (Growtopia HP):
-            #   in type=8 damage value=6   -> pukulan diterima, blok MASIH ada
-            #   in type=3 netid=1 value=18 -> ECHO: blok pecah
-            #   in type=3 netid=1 value=2  -> ECHO: place berhasil
-            #
-            # Jadi echo type=3 adalah konfirmasi NYATA untuk kedua aksi.
-            lama = self.world.tile(x, y)
-            if lama is not None and x >= 0 and y >= 0:
-                # Growtopia memukul FOREGROUND dulu; kalau tidak ada fg,
-                # pukulan mengenai BACKGROUND. Klien asli memakai aturan ini,
-                # dan skrip clear-world menunggu `fg == 0 and bg == 0`.
-                # Versi lama selalu mengosongkan fg, jadi tile yang hanya
-                # berisi background tidak pernah dianggap kosong dan bot
-                # memukulnya selamanya.
-                if lama.fg:
-                    baru = Tile(x=x, y=y, fg=0, bg=lama.bg)
-                else:
-                    baru = Tile(x=x, y=y, fg=0, bg=0)
-                self.world.update_tile(self.world.index_of(x, y), baru)
-                self._emit("tile_update", baru)
-                self._aksi_ok[(x, y)] = ("break", item_id, time.time())
-                self.catat_paket("in", 0, f"BLOK PECAH dikonfirmasi server "
-                                          f"tile=({x},{y})")
-                self._emit("break_diterima", (x, y))
+            # Bukti klien asli: type=8 damage = pukulan diterima blok masih
+            # ada; type=3 value=18 = echo blok pecah.
+            self._aksi_ok[(x, y)] = ("break", item_id, time.time())
+            self.catat_paket("in", 0,
+                             f"BLOK PECAH dikonfirmasi server tile=({x},{y})")
+            self._emit("break_diterima", (x, y))
             return
-        # Place diterima server: blok ini BENAR-BENAR ada di dunia sekarang.
-        # Tanpa menerapkannya ke `world` lokal, bot tidak tahu blok baru sudah
-        # terpasang sehingga tidak pernah memecahnya lagi (dan peta GUI
-        # tertinggal). Update lokal di sini, lalu biarkan type 5/6 menimpa
-        # kalau server mengirimnya.
-        lama = self.world.tile(x, y)
-        if lama is not None and x >= 0 and y >= 0:
-            baru = Tile(x=x, y=y, fg=item_id, bg=lama.bg,
-                        parent=lama.parent, flags=0)
-            self.world.update_tile(self.world.index_of(x, y), baru)
-            self._emit("tile_update", baru)
-            # Konfirmasi NYATA: server meng-echo place ini ke kita.
-            self._aksi_ok[(x, y)] = ("place", item_id, time.time())
+        # Place milik sendiri: stok berkurang satu.
+        self._aksi_ok[(x, y)] = ("place", item_id, time.time())
         if self.inventory.getItemCount(item_id) <= 0:
             return
         self.inventory.kurangi(item_id, 1)
@@ -2625,6 +2639,51 @@ class Bot:
         lalu anggap berhasil kalau paket keluar; kalau kebetulan ada echo,
         posisi diperbaiki dari data server.
         """
+        # -- rem gerakan ---------------------------------------------------- #
+        # 1) Jangan kirim posisi yang sama berulang: server menganggapnya
+        #    paket sia-sia dan menambah hitungan spam.
+        # 2) Jangan balik arah dengan cepat. Bolak-balik dalam <150 ms membuat
+        #    avatar tampak bergetar; klien asli tidak pernah begitu.
+        # JEDA ini juga menahan dua skrip yang tidak sengaja jalan bersamaan.
+        now = time.time()
+        arah = 1 if kecepatan_x > 0 else (-1 if kecepatan_x < 0 else 0)
+        if (abs(x - self._move_terakhir_pos[0]) < 0.5
+                and abs(y - self._move_terakhir_pos[1]) < 0.5):
+            return True
+        # -- gerbang: satu gerak per balasan server ------------------------- #
+        # Aturan operator: paket gerak hanya boleh keluar kalau server sudah
+        # mengirim paket masuk sejak gerak sebelumnya. Kalau belum, TUNGGU
+        # (jangan kirim). Bila melewati batas tunggu, batal dan laporkan:
+        # menembak terus ke server yang tidak membalas itulah pemicu
+        # shadowban.
+        # Gerbang: gerak HANYA boleh keluar kalau server masih mengirim paket
+        # masuk. Tidak ada ack per-gerak di Growtopia (bukti: 111 State keluar
+        # -> 0 State masuk), jadi yang dipakai heartbeat: `PingRequest` tiap
+        # ~4 dtk. Kalau heartbeat berhenti, berhenti mengirim State.
+        if (self.host is not None and self.status == BotStatus.online
+                and self._last_rx_ts > 0.0
+                and time.time() - self._last_rx_ts > MOVE_TUNGGU_BALAS_S):
+            self._gerak_ditahan += 1
+            if not self._gerak_tahan_dilaporkan:
+                self._gerak_tahan_dilaporkan = True
+                log.warning(
+                    "[%s] gerak ditahan: tidak ada paket masuk %.0f dtk — "
+                    "berhenti mengirim State",
+                    self.label, MOVE_TUNGGU_BALAS_S,
+                )
+            return False
+        if (arah and self._move_arah and arah != self._move_arah
+                and now - self._move_terakhir_ts < MOVE_MIN_BALIK_S):
+            self._move_ditolak += 1
+            return True
+        if now - self._move_terakhir_ts < MOVE_JEDA_MIN_S:
+            time.sleep(MOVE_JEDA_MIN_S - (now - self._move_terakhir_ts))
+            now = time.time()
+        self._move_terakhir_ts = now
+        self._move_terakhir_pos = (float(x), float(y))
+        if arah:
+            self._move_arah = arah
+
         self._emit("move", (round(x, 1), round(y, 1)))
         # Pola diambil dari paket `State` pemain NYATA di server ini
         # (diverifikasi dari jurnal paket, bukan tebakan):

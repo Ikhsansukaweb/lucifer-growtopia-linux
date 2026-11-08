@@ -12,7 +12,7 @@ local DELAY_BREAK = 140
 local MAX_DIAM = 6
 
 local WORLD_LIST = {
-    "jjjhhhdjjdw", -- ganti nama world lo
+    "bujioa|isans", -- ganti nama world lo
 }
 
 -------------------------
