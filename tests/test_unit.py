@@ -1409,6 +1409,50 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_baca_store_dari_server() -> None:
+    bagian("8a. OnStoreRequest: daftar item toko dari server")
+    from lucifer.account import Account
+    from lucifer.bot import Bot
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    # Bentuk payload mengikuti tag yang dikenali parser klien asli
+    # (libgrowtopia.so fungsi 0x17483f8): enable_tabs/add_tab/embed_data/
+    # add_button. Bukan `item|` seperti dugaan awal.
+    payload = (
+        "enable_tabs|2\n"
+        "add_tab|main\n"
+        "embed_data|item_id|2|price|100|count|1\n"
+        "add_button|buy_2|Dirt|100|\n"
+        "add_tab|locks\n"
+        "embed_data|item_id|242|price|2000|count|1\n"
+        "add_button|buy_242|World Lock|2000|\n"
+    )
+    info = bot._baca_store(payload)
+    cek("dua item toko dikenali", info["jumlah"] == 2, str(info["jumlah"]))
+    cek("item id benar", [i["item_id"] for i in info["items"]] == [2, 242],
+        str(info["items"]))
+    cek("tab ikut tercatat",
+        [i["tab"] for i in info["items"]] == ["main", "locks"],
+        str([i["tab"] for i in info["items"]]))
+    cek("store_items terisi", len(bot.store_items) == 2,
+        str(len(bot.store_items)))
+
+    # Pack: beberapa item dalam satu tombol -> semua item_id harus terbaca,
+    # bukan cuma yang pertama.
+    payload_pack = (
+        "add_tab|bundles\n"
+        "embed_data|item_id|2|count|10\n"
+        "embed_data|item_id|14|count|5\n"
+        "add_button|buy_bundle|Starter Pack|5000|\n"
+    )
+    info2 = bot._baca_store(payload_pack)
+    cek("pack: 2 item terbaca", info2["jumlah"] == 2, str(info2["jumlah"]))
+    cek("pack: item id 2 dan 14",
+        [i["item_id"] for i in info2["items"]] == [2, 14],
+        str([i["item_id"] for i in info2["items"]]))
+
+
 def test_batas_tile_tanpa_balas() -> None:
     bagian("7z. Throttle/shadowban: berhenti kirim tileChange tanpa balasan")
     import time
@@ -1993,6 +2037,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_baca_store_dari_server,
                test_batas_tile_tanpa_balas,
                test_watchdog_server_diam,
                test_identitas_lokal_dari_nama_berbacktick,

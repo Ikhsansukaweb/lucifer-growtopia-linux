@@ -412,6 +412,10 @@ class Bot:
         self._drop_baru: list[tuple[float, float, float]] = []
         # Markup dialog terakhir (diagnosis format server).
         self.dialog_terakhir = ""
+        # Isi toko terakhir dari `OnStoreRequest` (markdown UI dari server).
+        self.store_raw = ""
+        # Item toko hasil parse: {kode: {id, nama, harga, jumlah, pack}}
+        self.store_items: dict[str, dict[str, Any]] = {}
         self.playtime = 0
         self.captcha_status = "no_captcha"
         self.captcha_url = ""
@@ -1110,6 +1114,18 @@ class Bot:
             self._dump("dialog", teks.encode("utf-8", "replace"))
             self._baca_level_dialog(teks)
             self._emit("dialog", teks)
+        elif fn == "OnStoreRequest":
+            # Server mengirim DAFTAR ISI TOKO di sini (bukan `item|`), dalam
+            # bentuk markdown UI: `enable_tabs`, `add_tab`, `add_button`,
+            # `add_image`, `embed_data|item_id|...`, `price|...`.
+            # Tanpa handler ini seluruh isi toko (termasuk pack berisi
+            # banyak item) hilang. Simpan mentah supaya formatnya bisa
+            # dipastikan dari data nyata, bukan tebakan.
+            teks = vl.get(1).as_string() if vl.get(1) else ""
+            self.store_raw = teks
+            self._dump("store", teks.encode("utf-8", "replace"))
+            self._baca_store(teks)
+            self._emit("store", teks)
         elif fn == "OnSetBux":
             # OnSetBux(<gems>, <animate>, <supporter>, [vec3 jam]) — argumen
             # pertama = jumlah gem. Retail maupun server privat memakai ini.
@@ -1977,6 +1993,57 @@ class Bot:
         self.level = n
         self._emit("status_update", {"level": self.level, "gems": self.gem_count,
                                      "malady": self.malady})
+
+    def _baca_store(self, teks: str) -> dict[str, Any]:
+        """Parse isi toko dari `OnStoreRequest`.
+
+        Bentuk NYATA (dari `libgrowtopia.so`, fungsi parser 0x17483f8):
+        payload adalah baris-baris UI, bukan `item|`. Tag yang dikenali
+        parser klien asli:
+
+            enable_tabs|<n>            jumlah tab
+            start_custom_tabs|...      definisi tab
+            add_tab|...                tab baru
+            add_banner|...             banner atas
+            add_button|<...>           SATU ENTRI TOKO (25 field)
+            embed_data|item_id|...     id item yang dijual
+            add_image|...              ikon
+            add_custom_button|...      tombol khusus
+
+        Entri toko ada di baris `add_button|`; id item di `embed_data|`.
+        Harga (`gemCost`) dan jumlah pack ikut di baris yang sama.
+
+        Karena urutan field-nya panjang dan belum pernah tertangkap utuh,
+        parser ini SENGAJA konservatif: ambil yang bisa dipastikan
+        (item_id, nama, harga) dan simpan sisanya mentah di `raw`.
+        """
+        hasil: dict[str, Any] = {}
+        items: dict[str, dict[str, Any]] = {}
+        nama_tab = ""
+        for baris in (teks or "").split("\n"):
+            if "|" not in baris:
+                continue
+            bagian = baris.split("|")
+            tag = bagian[0].strip()
+            if tag == "add_tab" and len(bagian) > 1:
+                nama_tab = bagian[1].strip()
+            elif tag == "embed_data":
+                # embed_data|item_id|<id>|... atau embed_data|<id>
+                for i in range(1, len(bagian) - 1):
+                    if bagian[i].strip() == "item_id":
+                        try:
+                            hasil.setdefault("items", [])
+                            hasil["items"].append({"tab": nama_tab,
+                                                   "item_id": int(bagian[i + 1])})
+                        except (TypeError, ValueError):
+                            pass
+                        break
+        if hasil.get("items"):
+            items = {f"tab{nama_tab}_{i}": v
+                     for i, v in enumerate(hasil["items"])}
+        self.store_items = items
+        return {"jumlah": len(items), "items": list(items.values())[:50],
+                "panjang": len(teks or "")}
 
     def _baca_level_dialog(self, teks: str) -> bool:
         """Ambil level dari dialog profil (`add_player_info`).
