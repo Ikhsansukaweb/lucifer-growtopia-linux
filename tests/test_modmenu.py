@@ -39,7 +39,9 @@ def bot_uji() -> Bot:
 
 print("== skema ==")
 skema = skema_fitur()
-cek("ada 13 fitur (paritas deltaX)", len(skema) == 13, str([s["nama"] for s in skema]))
+# 13 fitur deltaX + AutoBuy (tambahan; paketnya terbukti dari libgrowtopia).
+cek("ada 14 fitur (13 deltaX + AutoBuy)", len(skema) == 14,
+    str([s["nama"] for s in skema]))
 cek("tiap fitur punya fitur+kontrol",
     all(s.get("fitur") and s.get("kontrol") for s in skema))
 

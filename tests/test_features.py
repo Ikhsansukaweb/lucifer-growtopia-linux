@@ -507,6 +507,53 @@ cek("shuffle tetap dari daftar", sp._berikut() in sp.daftar)
 sp.bersihkan()
 cek("bersihkan kosong", sp.daftar == [])
 
+print("== AutoBuy ==")
+ba = bot_kosong()
+ba.status = "online"
+_kirim_buy: list[str] = []
+ba.send_text = lambda t, body: _kirim_buy.append(body.decode()) or True  # type: ignore[method-assign]
+ba._set_gems(5000)
+ab = ba.fitur.autobuy
+ab.item = "gems_bundle06"
+ab.harga = 1000
+ab.jumlah = 1
+
+# Format WAJIB sama dengan literal libgrowtopia.so @0x6fe5f1:
+#   action|buy\nitem|
+# Tidak boleh ada itemID/count/max_price (versi lama mengarang field itu).
+ab.TIMEOUT_BALAS_MS = 300
+ab.sekali()
+cek("paket buy = action|buy\\nitem|<kode>",
+    _kirim_buy and _kirim_buy[0] == "action|buy\nitem|gems_bundle06\n",
+    repr(_kirim_buy[0] if _kirim_buy else ""))
+cek("tidak mengirim field karangan",
+    bool(_kirim_buy) and "itemID" not in _kirim_buy[0]
+    and "max_price" not in _kirim_buy[0])
+cek("gagal dihitung saat server diam", ab.gagal == 1, str(ab.gagal))
+
+# Gem kurang -> paket TIDAK dikirim.
+_kirim_buy.clear()
+ba._set_gems(500)
+cek("gem kurang tidak kirim", ab.sekali() is False and not _kirim_buy,
+    ab.terakhir)
+
+# Sisa minimal ikut dihitung: 1500 < 1000 + 800.
+ba._set_gems(1500)
+ab.sisa_gem_min = 800
+cek("sisa gem minimal dihitung", ab.sekali() is False and not _kirim_buy,
+    ab.terakhir)
+
+# Gem berubah setelah kirim = konfirmasi nyata (OnSetBux).
+import threading as _th
+ba._set_gems(5000)
+ab.sisa_gem_min = 0
+ba.send_text = lambda t, body: (
+    _th.Timer(0.05, lambda: ba._set_gems(ba.gem_count - 1000)).start(),
+    _kirim_buy.append(body.decode()), True)[-1]  # type: ignore[method-assign]
+ab.TIMEOUT_BALAS_MS = 2000
+cek("gem berubah -> pembelian sukses", ab.sekali() is True, ab.terakhir)
+cek("total naik", ab.total >= 1, str(ab.total))
+
 print("== Growscan ==")
 gs = b3.fitur.growscan.scan()
 cek("growscan baca nama world", gs["world"] == "UJI")

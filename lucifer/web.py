@@ -907,6 +907,7 @@ class Handler(BaseHTTPRequestHandler):
             "path": fb.path,
             "pathfinder": fb.path,
             "replay": fb.replay,
+            "autobuy": fb.autobuy,
             "fishing": fb.fishing,
             "autocrime": fb.autocrime,
             "ghost": fb.ghost,

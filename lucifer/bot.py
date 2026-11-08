@@ -2564,15 +2564,20 @@ class Bot:
             M.GenericText, f"action|retrieve\n|tilex|{int(x)}\n|tiley|{int(y)}\n|count|{int(count)}\n".encode()
         )
 
-    def buy(self, store_id_or_item, count: int = 0, max_price: int = 0) -> bool:
-        if isinstance(store_id_or_item, str) and not count:
-            return self.send_text(
-                M.GenericText, f"action|buy\n|itemID|{store_id_or_item}\n".encode()
-            )
-        return self.send_text(
-            M.GenericText,
-            f"action|buy\n|itemID|{int(store_id_or_item)}\n|count|{int(count)}\n|max_price|{int(max_price)}\n".encode(),
-        )
+    def buy(self, item: Any) -> bool:
+        """Beli di toko: `action|buy\nitem|<kode>\n`.
+
+        Format diambil dari literal `libgrowtopia.so` @0x6fe5f1:
+            action|buy\nitem|
+        Hanya SATU field (`item`) — versi lama memakai `|itemID|` ditambah
+        `count`/`max_price` yang tidak ada di klien asli, sehingga server
+        membuang paketnya.
+
+        `item` boleh kode toko (mis. `gems_bundle06`) atau id item angka.
+        Balasan server: `OnSetBux` (gem berkurang) untuk konfirmasi biaya,
+        `ModifyItemInventory` (barang masuk) atau `OnStoreBuyConfirm`.
+        """
+        return self.kirim("buy", item=str(item))
 
     # -- gerakan --------------------------------------------------------- #
     def moveTo(self, dx: int, dy: int) -> bool:

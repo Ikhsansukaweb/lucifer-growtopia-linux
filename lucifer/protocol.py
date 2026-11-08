@@ -461,6 +461,11 @@ ACTIONS: dict[str, tuple[str, ...]] = {
     "adClosed": (),
     "auction_getpage": ("pageIndex", "sortType", "searchItem"),
     "auction_place_bid": ("bidAmount",),
+    # Beli di toko. Literal di libgrowtopia.so @0x6fe5f1: `action|buy\nitem|`
+    # — field-nya `item` (BUKAN `itemID`; `itemID` dipakai trash/mod_trade).
+    # Balasan server: `OnSetBux` (gem berkurang) + `ModifyItemInventory`
+    # (barang masuk) atau `OnStorePurchaseResult`/`OnStoreBuyConfirm`.
+    "buy": ("item",),
     "chaching": (),
     "claimdailyreward": (),
     "claimdungeonchallengerewards": (),

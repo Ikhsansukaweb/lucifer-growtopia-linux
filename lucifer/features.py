@@ -1520,6 +1520,121 @@ class Growscan:
 
 
 # --------------------------------------------------------------------------- #
+# AutoBuy — beli di toko kalau gem cukup (`action|buy`)
+# --------------------------------------------------------------------------- #
+class AutoBuy:
+    """Beli item di Growtopia Store saat gem mencukupi.
+
+    Bukti dari `libgrowtopia.so` (5.58):
+      * request  @0x6fe5f1  `action|buy\nitem|`
+        -> SATU field `item`. Klien asli TIDAK mengirim `itemID`, `count`,
+           atau `max_price` (versi lama mengarang field itu -> server diam).
+      * harga    literal `gemCost` (0x76a...) dipakai UI toko.
+      * konfirmasi:
+          - `OnSetBux(baru, ...)`  -> gem berkurang (biaya terpotong)
+          - `ModifyItemInventory`  -> barang masuk inventaris
+          - `OnStorePurchaseResult` / `OnStoreBuyConfirm` -> pembelian IAP
+            (gem asli), bukan pembelian pakai gem.
+
+    Alur tiap langkah: kirim satu `buy`, TUNGGU gem berubah (atau timeout),
+    baru boleh kirim lagi. Tanpa jeda ini pembelian beruntun dianggap spam.
+    """
+
+    JEDA_MIN_MS = 1500       # jeda antar pembelian (server membatasi)
+    TIMEOUT_BALAS_MS = 5000  # batas tunggu konfirmasi gem
+
+    def __init__(self, bot: Bot) -> None:
+        self.bot = bot
+        self.aktif = False
+        self.item = ""           # kode toko (mis. gems_bundle06) atau id item
+        self.harga = 0           # harga dalam gem; 0 = tidak diperiksa
+        self.jumlah = 1          # berapa kali beli (0 = terus selama gem cukup)
+        self.jeda = self.JEDA_MIN_MS
+        self.sisa_gem_min = 0    # berhenti kalau gem < harga + nilai ini
+        self.total = 0
+        self.gagal = 0
+        self.terakhir = ""
+        self._s = _Siklus("autobuy")
+
+    # -- satu pembelian --------------------------------------------------- #
+    def sekali(self) -> bool:
+        """Kirim satu `action|buy` setelah syarat gem terpenuhi."""
+        if not str(self.item).strip():
+            self.terakhir = "item belum diisi"
+            return False
+        gem_awal = int(self.bot.gem_count)
+        harga = int(self.harga)
+        butuh = harga + int(self.sisa_gem_min)
+        if harga > 0 and gem_awal < butuh:
+            self.terakhir = f"gem kurang ({gem_awal} < {butuh})"
+            return False
+        if not self.bot.buy(self.item):
+            self.terakhir = "paket gagal dikirim"
+            return False
+        # Tunggu konfirmasi: gem berubah = server memproses pembelian.
+        batas = time.time() + self.TIMEOUT_BALAS_MS / 1000.0
+        while time.time() < batas:
+            if self._s._stop.is_set():
+                return False
+            if int(self.bot.gem_count) != gem_awal:
+                self.total += 1
+                self.terakhir = (f"berhasil: gem {gem_awal} -> "
+                                 f"{int(self.bot.gem_count)}")
+                return True
+            time.sleep(0.1)
+        self.gagal += 1
+        self.terakhir = "server tidak membalas (gem tidak berubah)"
+        return False
+
+    # -- loop ------------------------------------------------------------- #
+    def start(self, jeda: float = 0) -> bool:
+        if self._s.aktif:
+            return True
+        if self.bot.status != BotStatus.online:
+            raise FeatureError("bot belum online — connect dulu")
+        if not str(self.item).strip():
+            raise FeatureError("isi kode item toko dulu")
+        self._s = _Siklus("autobuy", aktif=True)
+        interval = max(float(jeda) if jeda else float(self.jeda),
+                       self.JEDA_MIN_MS) / 1000.0
+
+        def loop() -> None:
+            while not self._s._stop.is_set():
+                selesai = self.jumlah > 0 and self.total >= int(self.jumlah)
+                if selesai:
+                    self.terakhir = f"target {self.jumlah} tercapai"
+                    break
+                if not self.terakhir.startswith("gem kurang"):
+                    self.sekali()
+                if _tunggu(self._s._stop, interval):
+                    break
+            self._s.aktif = False
+            self.aktif = False
+
+        self._s._thread = threading.Thread(
+            target=loop, name="lucifer-autobuy", daemon=True)
+        self._s._thread.start()
+        self.aktif = True
+        return True
+
+    def stop(self) -> None:
+        self._s.stop()
+        self.aktif = False
+
+    @property
+    def berjalan(self) -> bool:
+        return self._s.aktif
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "aktif": self._s.aktif, "item": self.item,
+            "harga": self.harga, "jumlah": self.jumlah,
+            "total": self.total, "gagal": self.gagal,
+            "gem": int(self.bot.gem_count), "terakhir": self.terakhir,
+        }
+
+
+# --------------------------------------------------------------------------- #
 # Perintah chat gaya deltaX (/warp, /help, /finditem, /gscan, ...)
 # --------------------------------------------------------------------------- #
 class Commands:
@@ -2134,6 +2249,7 @@ class FiturBot:
         self.autodrop = AutoDrop(bot)
         self.replay = Replay(bot)
         self.growscan = Growscan(bot)
+        self.autobuy = AutoBuy(bot)
         self.commands = Commands(bot)
         # Fishing / AutoCrime / Ghost / Copy Song: paketnya belum terbukti
         # diterima server, jadi hanya menyimpan parameter (lihat `Parameter`).
@@ -2145,7 +2261,7 @@ class FiturBot:
         # form tidak kehilangan isian saat Simpan/Nyalakan.
         for fitur in ("spammer", "autofarm", "automation", "autocollect",
                       "fishing", "autocrime", "copysong", "ghost", "replay",
-                      "autowrench", "modexit"):
+                      "autowrench", "modexit", "autobuy"):
             obj = getattr(self, fitur, None)
             if obj is None:
                 continue
@@ -2156,7 +2272,7 @@ class FiturBot:
     def stop_semua(self) -> None:
         for f in (self.autofarm, self.autocollect, self.automation,
                   self.autowrench, self.modexit, self.spammer,
-                  self.autodrop, self.replay):
+                  self.autodrop, self.replay, self.autobuy):
             try:
                 f.stop()
             except Exception:  # noqa: BLE001
@@ -2176,6 +2292,7 @@ class FiturBot:
             "autodrop": self.autodrop.info(),
             "path": self.path.info(),
             "replay": self.replay.info(),
+            "autobuy": self.autobuy.info(),
             "commands": self.commands.info(),
         }
 
@@ -2184,6 +2301,7 @@ class FiturBot:
         af, ac, sp, pa, ad = (self.autofarm, self.autocollect, self.spammer,
                               self.path, self.autodrop)
         rp, gs, cm = self.replay, self.growscan, self.commands
+        ab = self.autobuy
         return {
             # autofarm
             "autofarm_start": lambda **kw: af.start(
@@ -2232,6 +2350,14 @@ class FiturBot:
             "replay_load": rp.muat,
             "replay_files": rp.daftar_berkas,
             "replay_status": rp.info,
+            # autobuy
+            "autobuy_start": ab.start,
+            "autobuy_stop": ab.stop,
+            "autobuy_status": ab.info,
+            "autobuy_set_item": lambda i: setattr(ab, "item", str(i)) or ab.item,
+            "autobuy_set_harga": lambda n: setattr(ab, "harga", int(n)) or ab.harga,
+            "autobuy_set_jumlah": lambda n: setattr(ab, "jumlah", int(n)) or ab.jumlah,
+            "autobuy_beli": ab.sekali,
             # growscan
             "growscan": gs.scan,
             # perintah chat
@@ -2491,6 +2617,19 @@ SKEMA_FITUR: list[dict] = [
             {"kunci": 'fastwrench_enhanced', "label": 'Enhanced Mode', "tipe": 'toggle'},
             {"kunci": 'autowrench', "label": 'Auto Wrench', "tipe": 'toggle'},
             {"kunci": 'autowrench_mode', "label": 'Auto wrench mode', "tipe": 'pilihan', "opsi": ['Player', 'Tile']},
+        ],
+    },
+    {
+        "nama": 'Auto Buy',
+        "kategori": 'World',
+        "fitur": 'autobuy',
+        "keterangan": 'beli item di store saat gem cukup (action|buy)',
+        "kontrol": [
+            {"kunci": 'item', "label": 'Kode item toko', "tipe": 'teks'},
+            {"kunci": 'harga', "label": 'Harga gem (0 = abaikan)', "tipe": 'angka', "min": 0, "maks": 1000000, "langkah": 1},
+            {"kunci": 'jumlah', "label": 'Jumlah beli (0 = terus)', "tipe": 'angka', "min": 0, "maks": 9999, "langkah": 1},
+            {"kunci": 'sisa_gem_min', "label": 'Sisakan gem minimal', "tipe": 'angka', "min": 0, "maks": 1000000, "langkah": 1},
+            {"kunci": 'jeda', "label": 'Jeda antar beli (ms)', "tipe": 'angka', "min": 500, "maks": 60000, "langkah": 100},
         ],
     },
     {
