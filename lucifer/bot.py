@@ -80,6 +80,9 @@ TILE_ACTIVATE_WRENCH = ITEM_WRENCH  # type 3 `value`, bukan type 7
 # (fitur otomasi DAN skrip Lua lewat `sendPacketRaw`) ikut terlindungi.
 JANGKAU_TILE = 4
 JEDA_MIN_TILE_S = 0.30
+# Berapa `tileChange` boleh dikirim tanpa satu pun balasan server sebelum
+# bot berhenti sendiri. 12 paket ≈ 4 detik pada jeda 300 ms.
+BATAS_TILE_TANPA_BALAS = 12
 
 
 class BotStatus:
@@ -451,13 +454,19 @@ class Bot:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._last_ping_ts = 0.0
-        # Waktu paket masuk terakhir. Dipakai watchdog: server Growtopia
-        # berhenti membalas total saat maintenance / saat kita di-throttle.
-        # Tanpa ini skrip terus menembak ke soket mati dan memperpanjang
-        # blokir.
+        # Waktu paket masuk terakhir. Dipakai watchdog: server bisa berhenti
+        # membalas `tileChange` (throttle/shadowban) walau koneksi masih
+        # hidup, dan bisa juga memutus sesi. Tanpa ini skrip terus menembak
+        # soket yang tidak diproses server dan memperpanjang blokir.
         self._last_rx_ts = 0.0
         # Hitungan pukulan per tile (per bot, bukan per kelas).
         self._hit_tiles: dict[tuple[int, int], int] = {}
+        # Jumlah `tileChange` berturut-turut yang TIDAK dibalas server.
+        # Nol lagi setiap ada `TileApplyDamage` atau echo milik bot sendiri.
+        # Ini yang mendeteksi shadowban/throttle: koneksi masih hidup dan
+        # paket lain tetap masuk, tapi aksi kita tidak diproses.
+        self._tile_tanpa_balas = 0
+        self._tile_blokir_dilaporkan = False
         # Throttle `tileChange` (lihat `_tile_change`). Dua paket pukul/taruh
         # lebih rapat dari JEDA_MIN_TILE_S dibuang server tanpa kabar, jadi
         # jalur Lua yang menembak 140 ms tidak pernah diproses.
@@ -870,7 +879,13 @@ class Bot:
             if _nama == "play_sfx":
                 self._on_play_sfx(_f.get("file", ""))
         else:
-            self.catat_paket("in", mtype, f"{len(payload)} B")
+            # Sebelumnya hanya panjang yang dicatat ("148 B"), sehingga pesan
+            # kick tidak terlihat di jurnal. `M.Error` (tipe 5) adalah alasan
+            # resmi server mengakhiri sesi — tampilkan isinya.
+            _nama_tipe = M(mtype).name if mtype in set(M) else str(mtype)
+            self.catat_paket("in", mtype,
+                             f"{_nama_tipe} {len(payload)} B "
+                             f"{payload[:120]!r}")
 
         if mtype == M.ServerHello:
             # Sub-server (setelah OnSendToServer) tidak menerima `ltoken`.
@@ -1306,6 +1321,8 @@ class Bot:
         if key[0] < 0 or key[1] < 0:
             return
         self._hit_tiles[key] = self._hit_tiles.get(key, 0) + 1
+        self._tile_tanpa_balas = 0
+        self._tile_blokir_dilaporkan = False
 
     def _baca_collected(self, msg: str) -> bool:
         """Tambah stok dari pesan `Collected <n> <nama item>`.
@@ -1453,6 +1470,11 @@ class Bot:
             return
         if self.local is None:
             return
+        # Echo milik bot sendiri = server masih memproses aksi kita.
+        # Reset HARUS setelah filter netid: echo pemain lain tidak boleh
+        # membuat bot mengira pukulannya diterima.
+        self._tile_tanpa_balas = 0
+        self._tile_blokir_dilaporkan = False
         if item_id in (ITEM_FIST, ITEM_WRENCH):
             # `value == 18` (Fist) pada echo = server menyatakan BLOK PECAH.
             #
@@ -2319,12 +2341,25 @@ class Bot:
         dan menolak paket tanpa posisi. Tile kosong atau bibit memakai posisi
         tile (seperti library deltaX), selain itu posisi pemain.
         """
-        # -- watchdog: server diam berarti soket sudah mati ---------------- #
-        # Bukti jurnal 11:03:21-11:03:40: setelah server mengirim broadcast
-        # "g-Virus Pandemic" (maintenance) tidak ada satu pun paket masuk,
-        # tapi skrip tetap mengirim 100+ `tileChange`. Setelah itu connect
-        # ditolak. Menembak soket mati memperpanjang blokir, jadi berhenti.
+        # -- watchdog: server diam berarti paket tidak diproses ------------ #
+        # Bukti jurnal 11:03:21-11:03:54: balasan `tileChange`/`TileApplyDamage`
+        # berhenti total di 11:03:21, tapi bot tetap mengirim 100+ pukulan.
+        # Koneksi masih hidup waktu itu (paket masuk 148 B/139 B di 11:03:33
+        # lalu sesi diputus). Menembak server yang tidak memproses paket
+        # memperpanjang blokir, jadi berhenti mengirim.
         if self._server_diam():
+            return False
+        # Throttle/shadowban: koneksi hidup tapi aksi kita tidak diproses.
+        # Bukti jurnal 11:03:21-11:03:54: server tetap mengirim paket lain,
+        # `tileChange` tidak dibalas sekali pun, dan sesi akhirnya diputus.
+        if self._tile_tanpa_balas >= BATAS_TILE_TANPA_BALAS:
+            if not self._tile_blokir_dilaporkan:
+                self._tile_blokir_dilaporkan = True
+                log.warning(
+                    "[%s] %d tileChange tanpa balasan server — berhenti "
+                    "mengirim pukulan supaya tidak memperpanjang blokir",
+                    self.label, self._tile_tanpa_balas,
+                )
             return False
 
         # -- saring jangkauan + laju (berlaku untuk SEMUA jalur) ----------- #
@@ -2351,6 +2386,7 @@ class Bot:
         if sisa > 0:
             time.sleep(sisa)
         self._tile_terakhir_ts = time.time()
+        self._tile_tanpa_balas += 1
 
         px, py = float(x * 32), float(y * 32)
         # Posisi paket = posisi PEMAIN, selalu. Bukan posisi tile.

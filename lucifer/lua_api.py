@@ -516,6 +516,7 @@ class LuaEngine:
         g.hasAccess = lambda x, y, bot=None: self._has_access(x, y, bot)
         g.ServerAlive = lambda bot=None: self._server_alive(bot)
         g.TotalHit = lambda bot=None: self._total_hit(bot)
+        g.TileBalas = lambda bot=None: self._tile_balas(bot)
 
         # --- enum ---------------------------------------------------------- #
         for enum_name, members in ENUMS.items():
@@ -1464,6 +1465,17 @@ class LuaEngine:
         """Jumlah `TileApplyDamage` yang sudah diterima bot ini."""
         b = self._resolve_bot(bot)
         return int(b.total_hit_diterima()) if b else 0
+
+    def _tile_balas(self, bot=None) -> int:
+        """Berapa `tileChange` terakhir yang belum dibalas server.
+
+        Naik tiap pukul/taruh yang tidak diproses, kembali 0 begitu ada
+        `TileApplyDamage`/echo milik bot. Dipakai skrip untuk berhenti saat
+        server berhenti memproses aksi (throttle/shadowban) walau koneksi
+        masih hidup.
+        """
+        b = self._resolve_bot(bot)
+        return int(b._tile_tanpa_balas) if b else 0
 
     def _server_alive(self, bot=None) -> bool:
         """True bila server masih mengirim paket (bukan maintenance).

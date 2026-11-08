@@ -1409,6 +1409,44 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_batas_tile_tanpa_balas() -> None:
+    bagian("7z. Throttle/shadowban: berhenti kirim tileChange tanpa balasan")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import BATAS_TILE_TANPA_BALAS, Bot, Player
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    out = []
+    bot.send_raw = lambda p, ext=b"": out.append(p) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=0.0, posy=736.0)
+    # Koneksi HIDUP (paket lain masih masuk) tapi aksi kita tidak diproses.
+    bot._last_rx_ts = time.time()
+
+    # Bukti jurnal 11:03:21-11:03:54: server tetap mengirim paket, tapi tidak
+    # satu pun tileChange dibalas, lalu sesi diputus.
+    n = sum(1 for _ in range(BATAS_TILE_TANPA_BALAS + 5)
+            if bot.hit(0, 24))
+    cek(f"berhenti di {BATAS_TILE_TANPA_BALAS} pukulan",
+        n == BATAS_TILE_TANPA_BALAS, str(n))
+    cek("paket tidak dikirim lagi", len(out) == BATAS_TILE_TANPA_BALAS * 2,
+        str(len(out)))
+
+    # Satu balasan server -> izin kirim pulih.
+    bot._apply_damage(Tank(type=8, net_id=1, int_x=0, int_y=24, value=6))
+    cek("penghitung reset setelah damage", bot._tile_tanpa_balas == 0,
+        str(bot._tile_tanpa_balas))
+    cek("boleh pukul lagi", bot.hit(0, 24) is True)
+
+    # Echo pemain lain TIDAK boleh mereset penghitung.
+    bot._tile_tanpa_balas = BATAS_TILE_TANPA_BALAS
+    bot._apply_tile_change_echo(Tank(type=3, net_id=99, int_x=0, int_y=24,
+                                     value=18))
+    cek("echo pemain lain tidak reset", bot._tile_tanpa_balas == BATAS_TILE_TANPA_BALAS,
+        str(bot._tile_tanpa_balas))
+
+
 def test_watchdog_server_diam() -> None:
     bagian("7y. Watchdog: tileChange tidak dikirim ke server yang diam")
     import time
@@ -1953,6 +1991,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_batas_tile_tanpa_balas,
                test_watchdog_server_diam,
                test_identitas_lokal_dari_nama_berbacktick,
                test_state_identik_tidak_spam_log,

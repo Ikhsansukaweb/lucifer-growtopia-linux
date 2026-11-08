@@ -71,30 +71,19 @@ local function clearWorld()
             and tile.fg ~= 8 then
 
                 if safePath(x, y - 1) then
-                    -- Pukul sampai tile kosong. Batasnya BUKAN jumlah pukulan
-                    -- tetap: tiap blok butuh jumlah berbeda (Rock ~10, Dirt
-                    -- ~2, Lava ~4). Versi lama `MAX_COBA=8` memotong Rock
-                    -- sehingga banyak blok dilewati. Yang dipakai: berhenti
-                    -- kalau server berhenti membalas (diam / maintenance).
-                    local diam = 0
+                    -- Pukul sampai tile kosong. TIDAK memakai batas jumlah
+                    -- pukulan tetap: tiap blok beda (Rock ~10, Dirt ~2), dan
+                    -- batas 8 dulu membuat Rock selalu dilewati.
+                    -- Yang dipakai: berhenti kalau server berhenti memproses
+                    -- pukulan kita (TileBalas naik terus tanpa balasan).
                     while GetTile(x, y).fg ~= 0
                        or GetTile(x, y).bg ~= 0 do
-                        if not ServerAlive() then
-                            log("Berhenti (server tidak membalas)", x, y)
-                            return
-                        end
-                        if diam >= MAX_DIAM then
-                            log("Lewati (server diam)", x, y)
+                        if TileBalas() >= MAX_DIAM then
+                            log("Lewati (server tidak membalas)", x, y)
                             break
                         end
-                        local sebelum = TotalHit()
                         punch(x, y)
                         randomSleep(DELAY_BREAK)
-                        if TotalHit() == sebelum then
-                            diam = diam + 1
-                        else
-                            diam = 0
-                        end
                     end
                 else
                     -- Tidak bisa mendekat: jangan pukul dari jauh, server
