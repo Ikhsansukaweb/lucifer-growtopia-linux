@@ -7,10 +7,12 @@
 -- CONFIG
 -------------------------
 local DELAY_BREAK = 140
-local MAX_COBA = 8
+-- Jumlah pukulan berturut-turut TANPA balasan server sebelum tile dilewati.
+-- Bukan batas jumlah pukulan per blok: tiap blok beda (Rock ~10, Dirt ~2).
+local MAX_DIAM = 6
 
 local WORLD_LIST = {
-    "jejehj", -- ganti nama world lo
+    "jjjhhhdjjdw", -- ganti nama world lo
 }
 
 -------------------------
@@ -45,10 +47,15 @@ end
 local function safePath(x, y)
     local dx = math.abs(pos().x - x)
     local dy = math.abs(pos().y - y)
-    if dx > 2 or dy > 2 then
-        FindPath(x, y)
-        Sleep(math.random(55, 70))
+    if dx <= 2 and dy <= 2 then return true end
+    -- FindPath mengembalikan TRUE bila GAGAL (perilaku deltaX). Versi lama
+    -- mengabaikannya, lalu memukul dari tempat jauh: server menolak tanpa
+    -- kabar, tile tidak pernah pecah, dan skrip menganggapnya selesai.
+    if FindPath(x, y) then
+        return false
     end
+    Sleep(math.random(55, 70))
+    return math.abs(pos().x - x) <= 3 and math.abs(pos().y - y) <= 3
 end
 
 -------------------------
@@ -63,20 +70,36 @@ local function clearWorld()
             and (tile.bg ~= 0 or tile.fg % 2 == 1)
             and tile.fg ~= 8 then
 
-                safePath(x, y - 1)
-
-                -- Batas percobaan: kalau server diam (blok tidak pecah),
-                -- berhenti. Tanpa ini `while` berputar selamanya menembak
-                -- tile yang sama dan server membalas dengan blokir.
-                local coba = 0
-                while (GetTile(x, y).fg ~= 0
-                   or GetTile(x, y).bg ~= 0) and coba < MAX_COBA do
-                    punch(x, y)
-                    randomSleep(DELAY_BREAK)
-                    coba = coba + 1
-                end
-                if coba >= MAX_COBA then
-                    log("Lewati (server diam)", x, y)
+                if safePath(x, y - 1) then
+                    -- Pukul sampai tile kosong. Batasnya BUKAN jumlah pukulan
+                    -- tetap: tiap blok butuh jumlah berbeda (Rock ~10, Dirt
+                    -- ~2, Lava ~4). Versi lama `MAX_COBA=8` memotong Rock
+                    -- sehingga banyak blok dilewati. Yang dipakai: berhenti
+                    -- kalau server berhenti membalas (diam / maintenance).
+                    local diam = 0
+                    while GetTile(x, y).fg ~= 0
+                       or GetTile(x, y).bg ~= 0 do
+                        if not ServerAlive() then
+                            log("Berhenti (server tidak membalas)", x, y)
+                            return
+                        end
+                        if diam >= MAX_DIAM then
+                            log("Lewati (server diam)", x, y)
+                            break
+                        end
+                        local sebelum = TotalHit()
+                        punch(x, y)
+                        randomSleep(DELAY_BREAK)
+                        if TotalHit() == sebelum then
+                            diam = diam + 1
+                        else
+                            diam = 0
+                        end
+                    end
+                else
+                    -- Tidak bisa mendekat: jangan pukul dari jauh, server
+                    -- membuang paketnya diam-diam. Catat lalu lanjut.
+                    log("Lewati (tak terjangkau)", x, y)
                 end
             end
         end

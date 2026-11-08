@@ -33,16 +33,23 @@ from .items import ItemDatabase
 
 log = logging.getLogger("lucifer.runner")
 
+# Folder repo (…/lucifer/runner.py -> …). Dasar path bawaan supaya `data/` dan
+# `scripts/` tetap ketemu walau backend dijalankan dari folder lain (GUI
+# native menjalankan `lucifer web`, terminal bisa dari folder mana pun).
+# Tanpa ini backend membuat `data/` kosong di cwd dan akun/skrip pengguna
+# seolah "hilang".
+ROOT = Path(__file__).resolve().parent.parent
+
 
 @dataclass
 class RunnerConfig:
     """Konfigurasi satu sesi Lucifer."""
 
     accounts: list[Account] = field(default_factory=list)
-    scripts_dir: str = "scripts"
-    examples_dir: str = "examples"
-    data_dir: str = "data"
-    items_path: str = "data/items.dat"
+    scripts_dir: str = str(ROOT / "scripts")
+    examples_dir: str = str(ROOT / "examples")
+    data_dir: str = str(ROOT / "data")
+    items_path: str = str(ROOT / "data" / "items.dat")
     username: str = "linux"
     hot_reload: bool = True
     auto_connect: bool = True
@@ -587,6 +594,11 @@ class Runner:
         if cmd == "stop":
             threading.Thread(target=self.stop, daemon=True).start()
             return {"ok": True, "message": "berhenti"}
+        if cmd in ("stopscript", "stop_script", "stoplua"):
+            if self.engine:
+                self.engine.stop_scripts()
+                return {"ok": True, "message": "skrip dihentikan"}
+            return {"ok": False, "error": "engine belum siap"}
         # respawn/collect tidak butuh argumen: boleh diketik telanjang dari
         # konsol Executor ("collect") maupun lewat label dari GUI.
         if cmd in ("say", "warp", "connect", "disconnect", "move", "enter",

@@ -432,6 +432,10 @@ class LuaEngine:
         self.threads: list[threading.Thread] = []
         self._queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
         self._stop = threading.Event()
+        # Hentikan HANYA skrip yang sedang jalan. Dipisah dari `_stop` karena
+        # `stop()` juga memutus koneksi semua bot — user yang cuma ingin
+        # menghentikan loop Lua tidak boleh ikut keluar dari dunia.
+        self._script_stop = threading.Event()
         self._listening = False
         self._listen_until = 0.0
         self._lua_lock = threading.RLock()
@@ -510,6 +514,8 @@ class LuaEngine:
         g.getNPC = lambda npcid, bot=None: None
         g.getNPCs = lambda bot=None: lua.table()
         g.hasAccess = lambda x, y, bot=None: self._has_access(x, y, bot)
+        g.ServerAlive = lambda bot=None: self._server_alive(bot)
+        g.TotalHit = lambda bot=None: self._total_hit(bot)
 
         # --- enum ---------------------------------------------------------- #
         for enum_name, members in ENUMS.items():
@@ -616,7 +622,7 @@ class LuaEngine:
             return
         end = time.time() + total
         while True:
-            if self._stop.is_set():
+            if self._stop.is_set() or self._script_stop.is_set():
                 raise LuaStop()
             if self._listening and time.time() > self._listen_until:
                 raise LuaStop()
@@ -1454,6 +1460,20 @@ class LuaEngine:
         b = self._resolve_bot(bot)
         return bool(b and b.hasAccess(int(x), int(y)))
 
+    def _total_hit(self, bot=None) -> int:
+        """Jumlah `TileApplyDamage` yang sudah diterima bot ini."""
+        b = self._resolve_bot(bot)
+        return int(b.total_hit_diterima()) if b else 0
+
+    def _server_alive(self, bot=None) -> bool:
+        """True bila server masih mengirim paket (bukan maintenance).
+
+        Skrip pembersih dunia memakainya untuk berhenti menembak saat koneksi
+        sudah mati; menembak soket mati memperpanjang blokir/ercon.
+        """
+        b = self._resolve_bot(bot)
+        return bool(b and b.status == BotStatus.online and not b._server_diam())
+
     # ------------------------------------------------------------------ #
     # Kelas-kelas Lua
     # ------------------------------------------------------------------ #
@@ -1896,7 +1916,7 @@ class LuaEngine:
         self._listen_until = time.time() + dur
         try:
             while time.time() < self._listen_until:
-                if self._stop.is_set():
+                if self._stop.is_set() or self._script_stop.is_set():
                     break
                 try:
                     kind, payload = self._queue.get(timeout=0.1)
@@ -1944,6 +1964,9 @@ class LuaEngine:
     # Menjalankan skrip
     # ------------------------------------------------------------------ #
     def run_script_source(self, source: str, label: str = "inline") -> bool:
+        # Skrip yang mulai jalan selalu menghapus permintaan stop lama,
+        # supaya "Stop" sekali tidak membunuh skrip berikutnya.
+        self._script_stop.clear()
         with self._lua_lock:
             try:
                 chunk = self.lua.execute(f"--[[{label}]]\n{source}")
@@ -2024,6 +2047,16 @@ class LuaEngine:
                 bot.disconnect()
             except Exception:  # noqa: BLE001
                 pass
+
+    def stop_scripts(self) -> None:
+        """Hentikan skrip Lua yang sedang jalan tanpa memutus bot.
+
+        `stop()` sengaja TIDAK dipakai di sini: itu juga memutus koneksi semua
+        bot, padahal pengguna cuma ingin menghentikan loop skrip.
+        """
+        self._script_stop.set()
+        self._unlisten_events()
+        self.log_line("skrip dihentikan")
 
 
 class LuaStop(Exception):

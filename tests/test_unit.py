@@ -1409,6 +1409,75 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_watchdog_server_diam() -> None:
+    bagian("7y. Watchdog: tileChange tidak dikirim ke server yang diam")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import Bot, BotStatus, Player
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    out = []
+    bot.send_raw = lambda p, ext=b"": out.append(p) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=0.0, posy=736.0)
+
+    # Bukti jurnal 11:03:21-11:03:40: setelah broadcast maintenance
+    # ("g-Virus Pandemic") tidak ada paket masuk, tapi skrip mengirim 100+
+    # tileChange ke soket mati.
+    bot._last_rx_ts = time.time() - 60
+    cek("server diam -> hit ditolak", bot.hit(0, 24) is False,
+        str(len(out)))
+    cek("_server_diam True", bot._server_diam() is True)
+
+    bot._last_rx_ts = time.time()
+    cek("server hidup -> _server_diam False", bot._server_diam() is False)
+    cek("server hidup -> hit terkirim", bot.hit(0, 24) is True,
+        str(len(out)))
+
+    # Hitungan per-tile harus milik instans, bukan kelas (multibot).
+    lain = Bot(account=Account(username="dua", password="", method="legacy",
+                               label="dua"), label="dua")
+    lain._hit_tiles[(5, 5)] = 0
+    bot._hit_tiles[(9, 9)] = 3
+    cek("hit count tidak bocor antar bot", lain.total_hit_diterima() == 0,
+        str(lain.total_hit_diterima()))
+    cek("total hit bot sendiri", bot.total_hit_diterima() == 3,
+        str(bot.total_hit_diterima()))
+
+
+def test_identitas_lokal_dari_nama_berbacktick() -> None:
+    bagian("7x. Bot mengenali diri sendiri walau nama server ber-backtick")
+    from lucifer.account import Account
+    from lucifer.bot import Bot, Player
+    from lucifer.protocol import remove_color
+
+    # Bukti jurnal: server mengirim name|Isanlucuuu`` sedangkan akun
+    # "Isanlucuuu". Regex lama `[a-zA-Z0-9#]` tidak membuang "``", jadi nama
+    # tidak pernah cocok -> bot memakai netid pemain lain -> echo pukulannya
+    # sendiri dibuang filter netid -> peta tidak update.
+    cek("remove_color buang dua backtick",
+        remove_color("Isanlucuuu``") == "Isanlucuuu",
+        repr(remove_color("Isanlucuuu``")))
+    cek("remove_color buang kode warna biasa",
+        remove_color("`4Nuron`0Lucifer") == "NuronLucifer")
+
+    bot = Bot(account=Account(username="Isanlucuuu", method="legacy",
+                              label="x"), label="x")
+    lain = Player(netid=2, name="IsanLucu", posx=64 * 32.0, posy=24 * 32.0)
+    bot.players[2] = lain
+    bot._jadikan_local(lain)          # kondisi bug: local salah
+    diri = Player(netid=1, name="Isanlucuuu``")
+    bot.players[1] = diri
+
+    cek("nama ber-backtick dikenali sebagai diri",
+        bot._cocok_nama(diri) is True)
+    cek("nama mirip bukan diri", bot._cocok_nama(lain) is False)
+    bot._jadikan_local(diri)
+    cek("local pindah ke netid sendiri", bot.local.netid == 1,
+        str(bot.local.netid))
+    cek("penanda lama dilepas", lain.isLocalPlayer is False)
+
+
 def test_state_identik_tidak_spam_log() -> None:
     bagian("7v. State posisi sama tidak memenuhi jurnal")
     from lucifer.account import Account
@@ -1884,6 +1953,8 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_watchdog_server_diam,
+               test_identitas_lokal_dari_nama_berbacktick,
                test_state_identik_tidak_spam_log,
                test_alias_growlauncher_pascalcase,
                test_echo_break_hapus_background,

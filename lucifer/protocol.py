@@ -230,8 +230,14 @@ def encode_text(fields: dict[str, Any]) -> bytes:
     return ("\n".join(f"{k}|{v}" for k, v in fields.items()) + "\n").encode("utf-8")
 
 
-# Kode warna Growtopia: backtick + satu karakter (`4 merah, `c, `#, `w, `o ...).
-_COLOR_RE = re.compile(r"`[a-zA-Z0-9#]")
+# Kode warna Growtopia: backtick + SATU karakter (`4 merah, `c, `#, `w, `o ...).
+# Efek samping penting: nama dari server berakhiran dua backtick ("Isanlucuuu``"),
+# jadi pola WAJIB menerima backtick sebagai karakter kode. Versi lama
+# (`[a-zA-Z0-9#]`) tidak cocok dengan "``" sehingga nama pemain tidak pernah
+# sama dengan nama akun — bot lalu salah mengenali dirinya sendiri sebagai
+# pemain lain, dan semua echo `TileChangeRequest`/`TileApplyDamage` miliknya
+# dibuang oleh filter netid ("peta tidak update, blok tidak pecah").
+_COLOR_RE = re.compile(r"`.")
 
 
 def remove_color(text: str) -> str:
@@ -241,7 +247,9 @@ def remove_color(text: str) -> str:
     memakainya tanpa memuat runtime Lua (`lupa`). `lua_api.remove_color`
     tetap ada untuk dipakai dari skrip Lua.
     """
-    return _COLOR_RE.sub("", str(text))
+    # Sisa backtick tunggal (mis. "nama`") juga dibuang: tidak pernah sah
+    # sebagai bagian nama/pesan.
+    return _COLOR_RE.sub("", str(text)).replace("`", "")
 
 
 class TextPacket(dict):

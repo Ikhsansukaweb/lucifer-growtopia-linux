@@ -27,7 +27,7 @@ from .account import (fetch_server_data, pesan_penolakan_login,
                       sedang_maintenance)
 from .bot import BotStatus
 from .items import ItemDatabase
-from .runner import Runner, RunnerConfig, load_config
+from .runner import ROOT, Runner, RunnerConfig, load_config
 
 BANNER = r"""
   _                       _  _
@@ -162,7 +162,7 @@ def cmd_doctor(args) -> int:
 
     # akun
     print(f"\n{head('Akun')}")
-    acc_path = Path("data/accounts.json")
+    acc_path = Path(ROOT / "data" / "accounts.json")
     if acc_path.exists():
         try:
             from .account import load_accounts  # noqa: PLC0415
@@ -353,7 +353,7 @@ def cmd_lua(args) -> int:
 
     cfg = load_config(args.config)
     if not cfg.accounts:
-        cfg.accounts = load_accounts("data/accounts.json")
+        cfg.accounts = load_accounts(ROOT / "data" / "accounts.json")
     if not cfg.accounts and not args.dry_run:
         print(bad("butuh akun (data/accounts.json atau env LUCIFER_USER/LUCIFER_PASS)"))
         print(dim("  tip: pakai --dry-run untuk menguji skrip tanpa login"))
@@ -949,7 +949,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser("doctor", help="cek lingkungan")
-    d.add_argument("--items", default="data/items.dat")
+    d.add_argument("--items", default=str(ROOT / "data" / "items.dat"))
     d.set_defaults(func=cmd_doctor)
 
     pr = sub.add_parser("probe", help="uji handshake ENet ke server Growtopia")
@@ -957,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_probe)
 
     it = sub.add_parser("items", help="periksa items.dat")
-    it.add_argument("file", nargs="?", default="data/items.dat")
+    it.add_argument("file", nargs="?", default=str(ROOT / "data" / "items.dat"))
     it.add_argument("-s", "--search", default="")
     it.add_argument("-e", "--exact", action="store_true")
     it.add_argument("-n", "--limit", type=int, default=15)
@@ -973,7 +973,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     lu = sub.add_parser("lua", help="jalankan satu file Lua")
     lu.add_argument("file")
-    lu.add_argument("-c", "--config", default="data/config.json")
+    lu.add_argument("-c", "--config", default=str(ROOT / "data" / "config.json"))
     lu.add_argument("--dry-run", action="store_true", help="tanpa login/koneksi")
     lu.add_argument("--connect", action="store_true", help="connect bot sebelum skrip")
     lu.add_argument("--listen", type=float, default=30.0)
@@ -993,7 +993,7 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument("-p", "--password", default="", help="password GrowID (kosong = tanya)")
     lg.add_argument("-n", "--name", default="", help="nama bot")
     lg.add_argument("-l", "--label", default="", help="label bot")
-    lg.add_argument("-o", "--out", default="data/accounts.json")
+    lg.add_argument("-o", "--out", default=str(ROOT / "data" / "accounts.json"))
     lg.add_argument("--verify", action="store_true", help="cek ltoken ke server dulu")
     lg.add_argument("--force", action="store_true", help="timpa/tetap simpan")
     lg.add_argument("--dari-hp", dest="dari_hp", action="store_true",
@@ -1004,8 +1004,8 @@ def build_parser() -> argparse.ArgumentParser:
     lg.set_defaults(func=cmd_login)
 
     r = sub.add_parser("run", help="jalankan bot + skrip")
-    r.add_argument("-c", "--config", default="data/config.json")
-    r.add_argument("-a", "--accounts", default="data/accounts.json")
+    r.add_argument("-c", "--config", default=str(ROOT / "data" / "config.json"))
+    r.add_argument("-a", "--accounts", default=str(ROOT / "data" / "accounts.json"))
     r.add_argument("-s", "--scripts", default="")
     r.add_argument("-d", "--data", default="")
     r.add_argument("-u", "--username", default="")
@@ -1015,7 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_run)
 
     w = sub.add_parser("web", help="jalankan dashboard web")
-    w.add_argument("-c", "--config", default="data/config.json")
+    w.add_argument("-c", "--config", default=str(ROOT / "data" / "config.json"))
     w.add_argument("-s", "--scripts", default="")
     w.add_argument("-d", "--data", default="")
     w.add_argument("--host", default="127.0.0.1")

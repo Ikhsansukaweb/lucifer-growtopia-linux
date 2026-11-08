@@ -917,6 +917,7 @@ GtkWidget *App::tab_executor() {
     gtk_box_pack_start(GTK_BOX(bar), toolbtn("Baru", G_CALLBACK(on_new_script), "ghost"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), toolbtn("Simpan", G_CALLBACK(on_save_script), "ghost"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), toolbtn("Jalankan", G_CALLBACK(on_run_script), "primary"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), toolbtn("Stop", G_CALLBACK(on_stop_script), "ghost"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), toolbtn("Hapus", G_CALLBACK(on_del_script), "danger"), FALSE, FALSE, 0);
 
     GtkWidget *sp = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);

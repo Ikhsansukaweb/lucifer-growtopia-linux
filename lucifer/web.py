@@ -262,6 +262,7 @@ PAGE = r"""<!DOCTYPE html>
       <input id="skrip-nama" placeholder="nama.lua" style="flex:0 0 200px">
       <button class="ghost mini" onclick="simpanSkrip()">Simpan</button>
       <button class="ghost mini" onclick="jalankanSkrip()">Jalankan</button>
+      <button class="danger mini" onclick="hentikanSkrip()">Stop</button>
       <span class="hint" id="skrip-out">—</span>
     </div>
     <textarea id="skrip-isi" spellcheck="false"
@@ -649,6 +650,11 @@ async function jalankanSkrip(){
   if(!name){ alert('isi nama file dulu'); return; }
   await sendCmd('run ' + name);
   $('skrip-out').textContent = 'dijalankan: ' + name;
+}
+
+async function hentikanSkrip(){
+  await sendCmd('stopscript');
+  $('skrip-out').textContent = 'perintah stop dikirim';
 }
 
 muatFitur();

@@ -1169,6 +1169,18 @@ void App::on_run_script(GtkButton *, gpointer self) {
     }
 }
 
+void App::on_stop_script(GtkButton *, gpointer self) {
+    auto *a = static_cast<App *>(self);
+    std::string err;
+    // Hentikan HANYA skrip; bot tetap di dunia (beda dengan perintah `stop`).
+    if (!a->post_ok("/api/command", "{\"command\":\"stopscript\"}", &err)) {
+        a->append_console("[stop] " + err);
+    } else {
+        a->append_console("[stop] skrip dihentikan");
+    }
+    if (a->exec_note_) gtk_label_set_text(GTK_LABEL(a->exec_note_), "stop dikirim");
+}
+
 void App::on_del_script(GtkButton *, gpointer self) {
     auto *a = static_cast<App *>(self);
     std::string nama = isi_entry(a->entry_script_name_);

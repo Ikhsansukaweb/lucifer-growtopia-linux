@@ -162,6 +162,7 @@ private:
     static void on_token_hp(GtkButton *, gpointer);
     static void on_save_script(GtkButton *, gpointer);
     static void on_run_script(GtkButton *, gpointer);
+    static void on_stop_script(GtkButton *, gpointer);
     static void on_del_script(GtkButton *, gpointer);
     static void on_new_script(GtkButton *, gpointer);
     static void on_script_row(GtkTreeView *, gpointer);

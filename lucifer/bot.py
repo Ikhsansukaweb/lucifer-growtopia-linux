@@ -344,7 +344,13 @@ class Bot:
     ) -> None:
         self.account = account or Account()
         self.label = label or self.account.label
-        self.name = self.account.username or self.label
+        # Nama untuk mencocokkan `OnSpawn|name|...` dengan diri sendiri.
+        # Server mengirim nama ber-kode warna/backtick ("Isanlucuuu``"),
+        # sedangkan `account.username` bersih — tanpa normalisasi keduanya
+        # tidak pernah sama dan bot salah mengenali pemain lain sebagai diri
+        # sendiri. Akibatnya echo `TileChangeRequest`/`TileApplyDamage` milik
+        # bot dibuang filter netid: peta tidak update dan blok tidak pecah.
+        self.name = P.remove_color(self.account.username or self.label).strip()
         self.status = BotStatus.offline
         self.items_db = items_db
         self.proxy = proxy or self.account.proxy
@@ -445,6 +451,13 @@ class Bot:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._last_ping_ts = 0.0
+        # Waktu paket masuk terakhir. Dipakai watchdog: server Growtopia
+        # berhenti membalas total saat maintenance / saat kita di-throttle.
+        # Tanpa ini skrip terus menembak ke soket mati dan memperpanjang
+        # blokir.
+        self._last_rx_ts = 0.0
+        # Hitungan pukulan per tile (per bot, bukan per kelas).
+        self._hit_tiles: dict[tuple[int, int], int] = {}
         # Throttle `tileChange` (lihat `_tile_change`). Dua paket pukul/taruh
         # lebih rapat dari JEDA_MIN_TILE_S dibuang server tanpa kabar, jadi
         # jalur Lua yang menembak 140 ms tidak pernah diproses.
@@ -800,6 +813,7 @@ class Bot:
     # Penanganan paket masuk
     # ------------------------------------------------------------------ #
     def _handle_packet(self, raw: bytes) -> None:
+        self._last_rx_ts = time.time()
         mtype, payload = P.parse_packet(raw)
 
         # Rekam SEMUA paket masuk apa adanya (tipe pesan + payload) supaya
@@ -1108,33 +1122,42 @@ class Bot:
                     pl.name = nama
                 # OnSpawn untuk nama sendiri = pemain lokal. Ini cara pasti
                 # mendapat netid sendiri; paket `State` baru mengisi posisinya.
-                if nama and self.name and nama == self.name:
-                    pl.isLocalPlayer = True
-                    self.local = pl
+                if self._cocok_nama(pl):
+                    self._jadikan_local(pl)
                 self.players[netid] = pl
                 # Spawn terakhir sebelum OnSetPos = diri sendiri: server
                 # mengirim OnSpawn lalu OnSetPos untuk pemain lokal.
                 self._last_spawn_netid = netid
                 self._emit("player_add", pl)
         elif fn == "OnSetPos":
-            # Posisi pemain LOKAL: OnSetPos(vec2). Dikirim server tepat setelah
-            # spawn; ini satu-satunya sumber posisi awal yang bisa dipercaya.
+            # Posisi pemain: OnSetPos(vec2). Netid pengirim ada di HEADER tank,
+            # dan paket ini dikirim untuk SETIAP pemain yang spawn — bukan hanya
+            # diri sendiri. Bukti jurnal:
+            #   in type=1 netid=4 -> OnSetPos (1440,736)
+            #   in type=1 netid=1 -> OnSetPos (2080,736)
+            # Versi lama selalu menulis ke `self.local`, jadi posisi bot
+            # berpindah mengikuti pemain lain: jangkauan pukul salah, tile yang
+            # sudah dipecah tidak terlihat berubah, dan peta tidak update.
             try:
                 v = vl.get(1)
                 val = getattr(v, "value", None)
                 if isinstance(val, tuple) and len(val) >= 2:
                     x, y = float(val[0]), float(val[1])
-                    if self.local is None:
-                        # OnSetPos selalu mendahului/mengikuti OnSpawn diri
-                        # sendiri, jadi pakai netid spawn terakhir.
-                        netid = getattr(self, "_last_spawn_netid", 0) or (
-                            sorted(self.players)[-1] if self.players else 0)
-                        pl = self.players.get(netid) or Player(netid=netid)
-                        pl.isLocalPlayer = True
-                        self.local = pl
-                        self.players[netid] = pl
-                    self.local.posx, self.local.posy = x, y
-                    self._emit("player_move", self.local)
+                    netid = int(tank.net_id) if tank is not None else 0
+                    if netid in (0, 0xFFFFFFFF):
+                        netid = getattr(self, "_last_spawn_netid", 0)
+                    pl = self.players.get(netid)
+                    if pl is None and netid:
+                        pl = self.players[netid] = Player(netid=netid)
+                    if pl is None:
+                        return
+                    if self.local is None and netid:
+                        # Belum tahu diri sendiri: OnSetPos pertama sesudah
+                        # OnSpawn diri = posisi kita (sementara; identitas
+                        # pasti datang lewat `SetCharacterState`).
+                        self._jadikan_local(pl)
+                    pl.posx, pl.posy = x, y
+                    self._emit("player_move", pl)
             except Exception as e:  # noqa: BLE001
                 log.debug("OnSetPos gagal: %s", e)
         elif fn == "OnRemove":
@@ -1262,8 +1285,9 @@ class Bot:
         )
         self.send_raw(reply)
 
-    # id tile -> jumlah pukulan yang sudah diterima server pada tile itu
-    _hit_tiles: dict[tuple[int, int], int] = {}
+    # id tile -> jumlah pukulan yang sudah diterima server pada tile itu.
+    # Dibuat per-instans di `__init__` (versi lama menaruhnya di level kelas,
+    # sehingga hitungan bot satu bocor ke bot lain saat multibot).
 
     def _apply_damage(self, tank: Tank) -> None:
         """Catat satu pukulan yang diterima server (`TileApplyDamage`).
@@ -1387,6 +1411,15 @@ class Bot:
     def hit_count(self, x: int, y: int) -> int:
         """Jumlah pukulan yang sudah diterima server untuk tile ini."""
         return self._hit_tiles.get((int(x), int(y)), 0)
+
+    def total_hit_diterima(self) -> int:
+        """Total `TileApplyDamage` yang sudah diterima untuk bot ini.
+
+        Dipakai skrip sebagai penanda "server masih membalas". Nilai naik
+        walaupun tile sasaran berbeda, jadi cocok untuk mendeteksi koneksi
+        yang sudah mati (maintenance) tanpa menebak jumlah pukulan per blok.
+        """
+        return sum(self._hit_tiles.values())
 
     def reset_hit(self, x: int, y: int) -> None:
         self._hit_tiles.pop((int(x), int(y)), None)
@@ -1800,14 +1833,12 @@ class Bot:
             pl.posx, pl.posy = x, y
             # JANGAN tebak pemain lokal dari "netid pertama tanpa nama": di
             # dunia ini pemain lain (netid 5) bergerak lebih dulu dan sempat
-            # dianggap diri sendiri. Netid sendiri hanya dari `SetCharacterState`.
-            if pl.name and self.name and pl.name == self.name:
-                pl.isLocalPlayer = True
-                self.local = pl
+            # dianggap diri sendiri. Pencocokan HANYA lewat nama yang sudah
+            # dibersihkan (`_cocok_nama`).
+            if self._cocok_nama(pl):
+                self._jadikan_local(pl)
             elif self.local is not None and netid == self.local.netid:
-                pl.isLocalPlayer = True
-                self.local = pl
-            self.players[netid] = pl
+                self._jadikan_local(pl)
             self._emit("player_move", pl)
         except Exception as e:  # noqa: BLE001
             log.debug("state gagal: %s", e)
@@ -1826,13 +1857,15 @@ class Bot:
                     return
                 netid = struct.unpack_from("<I", ext, 0)[0]
             pl = self.players.get(netid) or Player(netid=netid)
-            if self.local is None:
-                pl.isLocalPlayer = True
-                self.local = pl
-            elif netid == self.local.netid:
-                pl.isLocalPlayer = True
-                self.local = pl
             self.players[netid] = pl
+            # `SetCharacterState` disiarkan untuk SEMUA pemain. Jangan ambil
+            # alih `local` hanya karena paketnya datang lebih dulu: bug nyata
+            # membuat bot memakai netid pemain lain, sehingga echo pukulannya
+            # sendiri dibuang filter netid ("peta tidak update").
+            if self._cocok_nama(pl):
+                self._jadikan_local(pl)
+            elif self.local is None:
+                self._jadikan_local(pl)
             self._emit("character_state", pl)
             if (not self._profil_diminta and self.world.tiles
                     and netid == self.local.netid):
@@ -1840,6 +1873,28 @@ class Bot:
                 self.minta_profil()
         except Exception as e:  # noqa: BLE001
             log.debug("character state gagal: %s", e)
+
+    def _cocok_nama(self, pl: "Player") -> bool:
+        """Apakah `pl` adalah diri sendiri, dinilai dari NAMA.
+
+        Nama dari server membawa kode warna/backtick ("Isanlucuuu``"),
+        sedangkan `self.name` sudah dibersihkan. `remove_color` versi lama
+        tidak membuang "``", jadi pembanding ini selalu gagal dan bot salah
+        memakai netid pemain lain — akibatnya echo pukulannya sendiri dibuang
+        oleh filter netid dan peta tidak pernah update.
+        """
+        if not pl or not pl.name or not self.name:
+            return False
+        return P.remove_color(pl.name).strip().lower() == self.name.strip().lower()
+
+    def _jadikan_local(self, pl: Player) -> None:
+        """Tetapkan `pl` sebagai pemain lokal (satu-satunya jalur penetapan)."""
+        lama = self.local
+        if lama is not None and lama is not pl:
+            lama.isLocalPlayer = False
+        pl.isLocalPlayer = True
+        self.local = pl
+        self.players[pl.netid] = pl
 
     def _apply_status(self, ext: bytes) -> None:
         """UpdateStatus (type 2): status pemain, BUKAN sumber level/gems.
@@ -2264,6 +2319,14 @@ class Bot:
         dan menolak paket tanpa posisi. Tile kosong atau bibit memakai posisi
         tile (seperti library deltaX), selain itu posisi pemain.
         """
+        # -- watchdog: server diam berarti soket sudah mati ---------------- #
+        # Bukti jurnal 11:03:21-11:03:40: setelah server mengirim broadcast
+        # "g-Virus Pandemic" (maintenance) tidak ada satu pun paket masuk,
+        # tapi skrip tetap mengirim 100+ `tileChange`. Setelah itu connect
+        # ditolak. Menembak soket mati memperpanjang blokir, jadi berhenti.
+        if self._server_diam():
+            return False
+
         # -- saring jangkauan + laju (berlaku untuk SEMUA jalur) ----------- #
         # Bukti jurnal: 29 pukulan tile=(63,18) dari pemain di tile (65,23)
         # (dy=5) tidak menghasilkan satu pun `TileApplyDamage`; 82 pukulan
@@ -2339,6 +2402,17 @@ class Bot:
         self._place_terakhir_item = int(item)
         self._emit("place", (x, y, item))
         return self._tile_change(x, y, int(item))
+
+    def _server_diam(self, batas: float = 15.0) -> bool:
+        """True bila tidak ada paket masuk selama `batas` detik.
+
+        Dipakai `_tile_change` supaya pukulan/taruh tidak dikirim ke koneksi
+        yang sudah mati. Status `online` saja tidak cukup: soket ENet baru
+        melaporkan `disconnect` setelah timeout yang jauh lebih lama.
+        """
+        if self._last_rx_ts <= 0.0:
+            return False
+        return (time.time() - self._last_rx_ts) > batas
 
     def hit(self, x: int, y: int) -> bool:
         """Pukul tile. Bukan type 7 (itu pintu/wrench), tapi type 3 value Fist."""
