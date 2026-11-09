@@ -111,6 +111,9 @@ PAKET_MAKS_PER_DETIK = 10
 # Berapa `tileChange` boleh dikirim tanpa satu pun balasan server sebelum
 # bot berhenti sendiri. 12 paket ≈ 4 detik pada jeda 300 ms.
 BATAS_TILE_TANPA_BALAS = 12
+# Batas tunggu balasan satu aksi. Lewat ini = server tidak memproses, bot
+# berhenti mengirim aksi sampai ada balasan.
+AKSI_TUNGGU_BALAS_S = 2.0
 
 
 class BotStatus:
@@ -498,6 +501,10 @@ class Bot:
         # Ini yang mendeteksi shadowban/throttle: koneksi masih hidup dan
         # paket lain tetap masuk, tapi aksi kita tidak diproses.
         self._tile_tanpa_balas = 0
+        # Gerbang "satu aksi, tunggu balasan". True = masih menunggu server
+        # membalas aksi terakhir; selama True tidak ada aksi baru dikirim.
+        self._aksi_menunggu = False
+        self._aksi_mulai_ts = 0.0
         self._tile_blokir_dilaporkan = False
         # Rem paket gerak. Gerakan maju-mundur terlalu cepat terlihat sebagai
         # speedhack/teleport oleh server dan berujung shadowban.
@@ -1409,8 +1416,7 @@ class Bot:
         if key[0] < 0 or key[1] < 0:
             return
         self._hit_tiles[key] = self._hit_tiles.get(key, 0) + 1
-        self._tile_tanpa_balas = 0
-        self._tile_blokir_dilaporkan = False
+        self._aksi_dibalas()
 
     def _baca_collected(self, msg: str) -> bool:
         """Tambah stok dari pesan `Collected <n> <nama item>`.
@@ -1590,9 +1596,8 @@ class Bot:
             return
         # Echo milik bot sendiri = server masih memproses aksi kita.
         # Reset HARUS setelah filter netid: echo pemain lain tidak boleh
-        # membuat bot mengira pukulannya diterima.
-        self._tile_tanpa_balas = 0
-        self._tile_blokir_dilaporkan = False
+        # membuka gerbang aksi kita.
+        self._aksi_dibalas()
         # -- 2. efek pada bot sendiri -------------------------------------- #
         if item_id in (ITEM_FIST, ITEM_WRENCH):
             # `value == 18` (Fist) pada echo = server menyatakan BLOK PECAH.
@@ -2497,32 +2502,26 @@ class Bot:
                 return False
             self._tile_terkunci.pop((int(x), int(y)), None)
 
-        # -- watchdog: server diam berarti paket tidak diproses ------------ #
-        # Bukti jurnal 11:03:21-11:03:54: balasan `tileChange`/`TileApplyDamage`
-        # berhenti total di 11:03:21, tapi bot tetap mengirim 100+ pukulan.
-        # Koneksi masih hidup waktu itu (paket masuk 148 B/139 B di 11:03:33
-        # lalu sesi diputus). Menembak server yang tidak memproses paket
-        # memperpanjang blokir, jadi berhenti mengirim.
-        if self._server_diam():
-            return False
-        # Throttle/shadowban: koneksi hidup tapi aksi kita tidak diproses.
-        # Bukti jurnal 11:03:21-11:03:54: server tetap mengirim paket lain,
-        # `tileChange` tidak dibalas sekali pun, dan sesi akhirnya diputus.
-        if self._tile_tanpa_balas >= BATAS_TILE_TANPA_BALAS:
-            if not self._tile_blokir_dilaporkan:
-                self._tile_blokir_dilaporkan = True
-                log.warning(
-                    "[%s] %d tileChange tanpa balasan server — berhenti "
-                    "mengirim pukulan supaya tidak memperpanjang blokir",
-                    self.label, self._tile_tanpa_balas,
-                )
+        # -- GERBANG TUNGGAL: satu aksi, tunggu balasan server -------------- #
+        # Aturan operator, dan satu-satunya yang perlu:
+        #   kirim SATU paket aksi -> tunggu server membalas -> baru kirim lagi.
+        # Kalau server tidak membalas, BERHENTI. Titik.
+        #
+        # Bukti jurnal 05:34:10-05:34:21:
+        #   05:34:10 out type=3 tile=(64,24)   <- pukul #1
+        #   05:34:10 out type=3 tile=(64,24)   <- pukul #2, server BELUM balas
+        #   05:34:11 in  TileApplyDamage       <- baru balas #1
+        #   05:34:18 out type=3 tile=(73,24)   <- 8x, hanya 1 yang dibalas
+        # Menembak paket kedua sebelum yang pertama dibalas = sumber ercon.
+        if not self._tunggu_balasan_aksi():
             return False
 
-        # -- saring jangkauan + laju (berlaku untuk SEMUA jalur) ----------- #
-        # Bukti jurnal: 29 pukulan tile=(63,18) dari pemain di tile (65,23)
-        # (dy=5) tidak menghasilkan satu pun `TileApplyDamage`; 82 pukulan
-        # berikutnya ke tile=(0,24) juga tidak dibalas. Server menolak diam
-        # untuk tile di luar 4 dan untuk paket yang datang > ~3/detik.
+        # Server benar-benar diam (tidak ada paket masuk sama sekali)?
+        # Gerbang paket: jangan kirim apa pun ke koneksi yang mati.
+        if self._server_diam():
+            return False
+
+        # Saring jangkauan: server menolak diam untuk tile di luar 4.
         if self.local is not None:
             cx, cy = self.local.posx + 10, self.local.posy + 15
             tx, ty = int(x) * 32 + 16, int(y) * 32 + 16
@@ -2536,11 +2535,16 @@ class Bot:
                         self._tile_ditolak,
                     )
                 return False
-        # Jeda minimum antar tileChange. Ditunggu, BUKAN dibuang, supaya
-        # skrip Lua yang menembak 140 ms tetap menyelesaikan semua tile.
+
+        # Laju minimum antar aksi (rate limit), di samping gerbang balasan.
         sisa = JEDA_MIN_TILE_S - (time.time() - self._tile_terakhir_ts)
         if sisa > 0:
             time.sleep(sisa)
+
+        # Tandai aksi ini MENUNGGU balasan. Balasan apa pun milik bot
+        # (TileApplyDamage / echo TileChangeRequest) akan membukanya.
+        self._aksi_menunggu = True
+        self._aksi_mulai_ts = time.time()
         self._tile_terakhir_ts = time.time()
         self._tile_tanpa_balas += 1
 
@@ -2594,6 +2598,39 @@ class Bot:
         self._place_terakhir_item = int(item)
         self._emit("place", (x, y, item))
         return self._tile_change(x, y, int(item))
+
+    def _tunggu_balasan_aksi(self) -> bool:
+        """Gerbang tunggal: boleh kirim aksi baru hanya bila yang lalu dibalas.
+
+        Aturan operator: satu paket aksi -> tunggu server balas -> baru boleh
+        kirim lagi. Kalau tidak dibalas dalam AKSI_TUNGGU_BALAS_S, bot
+        BERHENTI mengirim aksi (bukan menembak terus).
+        """
+        # Hanya berlaku saat benar-benar terhubung. Di uji/offline tidak ada
+        # server yang akan membalas, jadi gerbang tidak boleh mengunci.
+        if self.host is None or self.status != BotStatus.online:
+            return True
+        if not self._aksi_menunggu:
+            return True
+        tunggu = time.time() - self._aksi_mulai_ts
+        if tunggu < AKSI_TUNGGU_BALAS_S:
+            return False
+        # Sudah lewat batas: server tidak membalas. Berhenti kirim aksi.
+        if not self._tile_blokir_dilaporkan:
+            self._tile_blokir_dilaporkan = True
+            log.warning(
+                "[%s] aksi tidak dibalas server %.1f dtk — BERHENTI "
+                "mengirim aksi (tidak akan lanjut sampai server membalas)",
+                self.label, tunggu,
+            )
+        return False
+
+    def _aksi_dibalas(self) -> None:
+        """Server membalas aksi kita -> boleh kirim aksi berikutnya."""
+        self._aksi_menunggu = False
+        self._aksi_mulai_ts = 0.0
+        self._tile_tanpa_balas = 0
+        self._tile_blokir_dilaporkan = False
 
     def _ambil_jatah_paket(self) -> bool:
         """True kalau masih di bawah PAKET_MAKS_PER_DETIK.

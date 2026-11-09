@@ -1443,6 +1443,7 @@ def test_budget_paket_dan_tile_terkunci() -> None:
     # Tile terkunci dilepas setelah jendela ingat habis.
     bot._tile_terkunci[(69, 24)] = time.time() - 400
     bot._paket_ts.clear()
+    bot._aksi_menunggu = False      # gerbang terbuka
     bot.local.posx, bot.local.posy = 69 * 32.0, 24 * 32.0 + 32
     cek("tile terkunci dilepas setelah jeda", bot.hit(69, 24) is True)
 
@@ -1552,27 +1553,28 @@ def test_batas_tile_tanpa_balas() -> None:
     # Koneksi HIDUP (paket lain masih masuk) tapi aksi kita tidak diproses.
     bot._last_rx_ts = time.time()
 
-    # Bukti jurnal 11:03:21-11:03:54: server tetap mengirim paket, tapi tidak
-    # satu pun tileChange dibalas, lalu sesi diputus.
-    n = sum(1 for _ in range(BATAS_TILE_TANPA_BALAS + 5)
-            if bot.hit(0, 24))
-    cek(f"berhenti di {BATAS_TILE_TANPA_BALAS} pukulan",
-        n == BATAS_TILE_TANPA_BALAS, str(n))
-    cek("paket tidak dikirim lagi", len(out) == BATAS_TILE_TANPA_BALAS * 2,
-        str(len(out)))
+    # Aturan operator: SATU aksi, tunggu balasan. Aksi kedua sebelum
+    # dibalas HARUS ditolak (bukti 05:34:10: dua type=3 berturut-turut
+    # padahal server baru membalas pukulan pertama).
+    bot.host = object()          # anggap terhubung
+    bot.status = "online"
+    cek("pukulan pertama terkirim", bot.hit(0, 24) is True)
+    awal = len(out)
+    cek("pukulan kedua DITOLAK (belum dibalas)", bot.hit(0, 24) is False)
+    cek("tidak ada paket tambahan", len(out) == awal, str(len(out)))
 
-    # Satu balasan server -> izin kirim pulih.
+    # Server membalas -> gerbang terbuka.
     bot._apply_damage(Tank(type=8, net_id=1, int_x=0, int_y=24, value=6))
-    cek("penghitung reset setelah damage", bot._tile_tanpa_balas == 0,
-        str(bot._tile_tanpa_balas))
+    cek("gerbang terbuka setelah damage", bot._aksi_menunggu is False)
     cek("boleh pukul lagi", bot.hit(0, 24) is True)
 
-    # Echo pemain lain TIDAK boleh mereset penghitung.
-    bot._tile_tanpa_balas = BATAS_TILE_TANPA_BALAS
+    # Echo pemain lain TIDAK boleh membuka gerbang aksi kita.
+    bot._aksi_menunggu = True
+    bot._aksi_mulai_ts = time.time()
     bot._apply_tile_change_echo(Tank(type=3, net_id=99, int_x=0, int_y=24,
                                      value=18))
-    cek("echo pemain lain tidak reset", bot._tile_tanpa_balas == BATAS_TILE_TANPA_BALAS,
-        str(bot._tile_tanpa_balas))
+    cek("echo pemain lain tidak membuka gerbang",
+        bot._aksi_menunggu is True)
 
 
 def test_watchdog_server_diam() -> None:
