@@ -80,11 +80,16 @@ TILE_ACTIVATE_WRENCH = ITEM_WRENCH  # type 3 `value`, bukan type 7
 # (fitur otomasi DAN skrip Lua lewat `sendPacketRaw`) ikut terlindungi.
 JANGKAU_TILE = 4
 JEDA_MIN_TILE_S = 0.30
-# Rem paket gerak (`State`). Klien asli bergerak 123 px/detik = 1 tile per
-# 260 ms, jadi 120 ms masih di atas laju wajar. Nilai ini menahan dua skrip
-# yang jalan bersamaan dan gerakan bolak-balik cepat.
-MOVE_JEDA_MIN_S = 0.12
-MOVE_MIN_BALIK_S = 0.15
+# Rem paket gerak (`State`). Klien asli bergerak 123 px/detik; 1 tile = 32 px
+# jadi SATU tile butuh 32/123 = 0,26 dtk. Nilai 0,12 yang lama = 2x kecepatan
+# klien asli dan itulah yang terbaca sebagai speedhack.
+# Bukti jurnal 22:14:05-22:14:07:
+#   22:14:05 pos=(2208,800)
+#   22:14:06 pos=(2240,800)
+#   22:14:07 pos=(2272,800)
+#   22:14:07 pos=(2304,800)   <- DUA tile dalam satu detik = 246 px/dtk
+MOVE_JEDA_MIN_S = 0.26
+MOVE_MIN_BALIK_S = 0.20
 # Batas "server masih hidup" untuk paket gerak. Growtopia TIDAK meng-echo
 # `State` milik sendiri (bukti jurnal: 111 paket gerak keluar, 0 balik), jadi
 # ack per-gerak tidak ada. Yang ada hanya heartbeat `PingRequest` setiap
@@ -95,6 +100,14 @@ MOVE_TUNGGU_BALAS_S = 8.0
 # DIHENTIKAN selama ini. Menembak State lagi sebelum jendela ini habis =
 # pola teleport yang memicu shadowban (bukti jurnal 18:00:18-18:00:21).
 POS_KOREKSI_DIAM_S = 2.0
+# Tile yang dijawab `punch_locked` diingat selama ini dan TIDAK dipukul lagi.
+# Bukti jurnal 22:14:01-22:14:02: 8 pukulan ke tile=(69,24) ditolak semua.
+TILE_TERKUNCI_INGAT_S = 300.0
+# Budget paket global. Klien asli mengirim ~10 paket/detik (gerak 4/dtk +
+# ping + aksi). Di atas ini server Growtopia mulai membuang paket dan
+# menandai akun. Bukti jurnal 22:13:54-22:14:02: 4 paket/detik hanya dari
+# gerak+pukul, lalu tile terkunci dipukul 8x -> total >10/dtk -> ercon.
+PAKET_MAKS_PER_DETIK = 10
 # Berapa `tileChange` boleh dikirim tanpa satu pun balasan server sebelum
 # bot berhenti sendiri. 12 paket ≈ 4 detik pada jeda 300 ms.
 BATAS_TILE_TANPA_BALAS = 12
@@ -503,6 +516,12 @@ class Bot:
         # menimpa koreksi itu dengan prediksi sendiri. Pola itulah yang
         # dianggap teleport/speedhack -> shadowban. Sekarang koreksi dipakai
         # dan gerakan langsung dihentikan.
+        # Tile terakhir yang dipukul + daftar tile terkunci (punch_locked).
+        # Jendela geser untuk budget paket global (anti ercon).
+        self._paket_ts: collections.deque[float] = collections.deque(maxlen=64)
+        self._paket_ditahan = 0
+        self._hit_terakhir: Optional[tuple[int, int]] = None
+        self._tile_terkunci: dict[tuple[int, int], float] = {}
         self._pos_dikoreksi = 0.0
         self._pos_koreksi_xy = (0.0, 0.0)
         self._gerak_diblokir = False
@@ -1439,8 +1458,19 @@ class Bot:
         suara ini bisa dipasangkan ke tile yang tepat.
         """
         f = (file or "").lower()
-        tile = self._place_terakhir
+        # `punch_locked` = tile terkunci, pukulan DITOLAK.
+        # Bukti jurnal 22:14:01-22:14:02: tile=(69,24) dipukul 8x padahal
+        # server mengirim `audio/punch_locked.wav` tiap kali. Bot terus
+        # menembak -> paket sia-sia bertubi = pola yang memicu ercon.
+        tile = self._hit_terakhir or self._place_terakhir
         if not tile:
+            return
+        if "punch_locked" in f:
+            self._tile_terkunci[tile] = time.time()
+            self.catat_paket("in", 0,
+                             f"PUKUL DITOLAK server di tile={tile} "
+                             f"(punch_locked) — tile terkunci")
+            self._emit("punch_ditolak", tile)
             return
         if "cant_place_tile" in f:
             item = self._place_terakhir_item
@@ -2266,6 +2296,12 @@ class Bot:
         """Kirim GamePacket (Tank)."""
         if not self.host:
             return False
+        # -- budget paket global ------------------------------------------- #
+        # Satu-satunya rem yang berlaku untuk SEMUA jalur (gerak, pukul,
+        # taruh, ping, skrip Lua). Tanpa ini laju paket bisa melampaui
+        # klien asli dan server menandai akun (ercon/shadowban).
+        if not self._ambil_jatah_paket():
+            return False
         if not isinstance(tank, Tank):
             # Tabel Lua bisa punya field bernilai nil; `getattr` mengembalikan
             # None (bukan default) untuk atribut yang ada tapi kosong, jadi
@@ -2451,6 +2487,16 @@ class Bot:
         dan menolak paket tanpa posisi. Tile kosong atau bibit memakai posisi
         tile (seperti library deltaX), selain itu posisi pemain.
         """
+        # -- tile terkunci: jangan pukul -------------------------------- #
+        # Bukti jurnal 22:14:01: `audio/punch_locked.wav` berkali-kali untuk
+        # tile=(69,24) yang sama. Server menolak tiap pukulan, dan spam itu
+        # yang memicu ercon. Tile ditolak selama TILE_TERKUNCI_INGAT_S.
+        kunci = self._tile_terkunci.get((int(x), int(y)))
+        if kunci is not None:
+            if time.time() - kunci < TILE_TERKUNCI_INGAT_S:
+                return False
+            self._tile_terkunci.pop((int(x), int(y)), None)
+
         # -- watchdog: server diam berarti paket tidak diproses ------------ #
         # Bukti jurnal 11:03:21-11:03:54: balasan `tileChange`/`TileApplyDamage`
         # berhenti total di 11:03:21, tapi bot tetap mengirim 100+ pukulan.
@@ -2549,6 +2595,22 @@ class Bot:
         self._emit("place", (x, y, item))
         return self._tile_change(x, y, int(item))
 
+    def _ambil_jatah_paket(self) -> bool:
+        """True kalau masih di bawah PAKET_MAKS_PER_DETIK.
+
+        Jendela geser 1 detik. Dipakai `send_raw`; `send_text` (paket teks
+        seperti `say`/`warp`) sengaja TIDAK dibatasi karena jumlahnya kecil
+        dan tidak pernah beruntun.
+        """
+        now = time.time()
+        while self._paket_ts and now - self._paket_ts[0] > 1.0:
+            self._paket_ts.popleft()
+        if len(self._paket_ts) >= PAKET_MAKS_PER_DETIK:
+            self._paket_ditahan += 1
+            return False
+        self._paket_ts.append(now)
+        return True
+
     def _server_diam(self, batas: float = 15.0) -> bool:
         """True bila tidak ada paket masuk selama `batas` detik.
 
@@ -2562,6 +2624,7 @@ class Bot:
 
     def hit(self, x: int, y: int) -> bool:
         """Pukul tile. Bukan type 7 (itu pintu/wrench), tapi type 3 value Fist."""
+        self._hit_terakhir = (int(x), int(y))
         self._emit("hit", (x, y))
         return self._tile_change(x, y, ITEM_FIST)
 

@@ -1409,6 +1409,44 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_budget_paket_dan_tile_terkunci() -> None:
+    bagian("7zb. Anti-ercon: budget paket + tile terkunci")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import (Bot, BotStatus, PAKET_MAKS_PER_DETIK, Player)
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.status = BotStatus.online
+    out = []
+    bot.host = object()      # anggap terhubung
+    bot.send_text = lambda t, body: out.append(body) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=2144.0, posy=736.0)
+    bot._last_rx_ts = time.time()
+
+    # Bukti jurnal 22:13:54-22:14:02: >10 paket/detik -> ercon.
+    n = sum(1 for _ in range(30) if bot._ambil_jatah_paket())
+    cek(f"budget {PAKET_MAKS_PER_DETIK} paket/detik",
+        n == PAKET_MAKS_PER_DETIK, str(n))
+    cek("kelebihan ditahan", bot._paket_ditahan == 30 - PAKET_MAKS_PER_DETIK,
+        str(bot._paket_ditahan))
+
+    # Bukti jurnal 22:14:01: `punch_locked` lalu bot tetap mukul 8x.
+    bot._paket_ts.clear()
+    bot._hit_terakhir = (69, 24)
+    bot._on_play_sfx("audio/punch_locked.wav")
+    cek("punch_locked menandai tile", (69, 24) in bot._tile_terkunci,
+        str(bot._tile_terkunci))
+    cek("hit ke tile terkunci ditolak", bot.hit(69, 24) is False)
+    cek("hit tile lain tetap boleh", bot.hit(70, 24) is True)
+
+    # Tile terkunci dilepas setelah jendela ingat habis.
+    bot._tile_terkunci[(69, 24)] = time.time() - 400
+    bot._paket_ts.clear()
+    bot.local.posx, bot.local.posy = 69 * 32.0, 24 * 32.0 + 32
+    cek("tile terkunci dilepas setelah jeda", bot.hit(69, 24) is True)
+
+
 def test_koreksi_posisi_server() -> None:
     bagian("7za. OnSetPos = koreksi gerak: bot berhenti, bukan menimpa")
     import time
@@ -2083,6 +2121,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_budget_paket_dan_tile_terkunci,
                test_koreksi_posisi_server,
                test_baca_store_dari_server,
                test_batas_tile_tanpa_balas,
