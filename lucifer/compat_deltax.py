@@ -428,10 +428,16 @@ def pasang(engine) -> None:
         path = b.getPath(int(x), int(y))
         if not path:
             return True
+        # Jeda per tile HARUS >= laju klien asli (123 px/dtk = 32 px / 260 ms).
+        # Versi lama memakai 120 ms = ~2x kecepatan normal; server melihatnya
+        # sebagai speedhack/teleport dan membalas `OnSetPos` berulang
+        # (bukti jurnal 18:00:18-18:00:21: bot melompat 57 tile sekaligus).
+        jeda = max((getattr(b, "move_interval", 0) or 0) / 1000.0, 0.26)
         for langkah in path:
             px, py = langkah[0], langkah[1]
-            b.moveTile(px, py)
-            time.sleep((getattr(b, "move_interval", 0) or 120) / 1000.0)
+            if not b.moveTile(px, py):
+                return True
+            time.sleep(jeda)
         return False
 
     g.LogToConsole = LogToConsole

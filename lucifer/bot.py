@@ -91,6 +91,10 @@ MOVE_MIN_BALIK_S = 0.15
 # ~4 detik. Kalau tidak ada paket masuk selama ini, berhenti mengirim State:
 # menembak koneksi mati itulah yang memicu shadowban/ercon.
 MOVE_TUNGGU_BALAS_S = 8.0
+# Setelah server mengoreksi posisi kita (`OnSetPos` saat bergerak), gerakan
+# DIHENTIKAN selama ini. Menembak State lagi sebelum jendela ini habis =
+# pola teleport yang memicu shadowban (bukti jurnal 18:00:18-18:00:21).
+POS_KOREKSI_DIAM_S = 2.0
 # Berapa `tileChange` boleh dikirim tanpa satu pun balasan server sebelum
 # bot berhenti sendiri. 12 paket ≈ 4 detik pada jeda 300 ms.
 BATAS_TILE_TANPA_BALAS = 12
@@ -493,6 +497,15 @@ class Bot:
         # Penghitung gerak yang ditahan karena server tidak membalas.
         self._gerak_ditahan = 0
         self._gerak_tahan_dilaporkan = False
+        # Koreksi posisi dari server (`OnSetPos` saat kita bergerak).
+        # Bukti jurnal 18:00:18-18:00:21: bot "teleport" 57 tile dalam satu
+        # paket, server membalas `OnSetPos (2080,736)` LIMA kali, dan bot
+        # menimpa koreksi itu dengan prediksi sendiri. Pola itulah yang
+        # dianggap teleport/speedhack -> shadowban. Sekarang koreksi dipakai
+        # dan gerakan langsung dihentikan.
+        self._pos_dikoreksi = 0.0
+        self._pos_koreksi_xy = (0.0, 0.0)
+        self._gerak_diblokir = False
         # Throttle `tileChange` (lihat `_tile_change`). Dua paket pukul/taruh
         # lebih rapat dari JEDA_MIN_TILE_S dibuang server tanpa kabar, jadi
         # jalur Lua yang menembak 140 ms tidak pernah diproses.
@@ -1211,7 +1224,23 @@ class Bot:
                         # OnSpawn diri = posisi kita (sementara; identitas
                         # pasti datang lewat `SetCharacterState`).
                         self._jadikan_local(pl)
+                    lama_x, lama_y = pl.posx, pl.posy
                     pl.posx, pl.posy = x, y
+                    if (netid and self.local is not None
+                            and netid == self.local.netid
+                            and (abs(x - lama_x) > 1.0
+                                 or abs(y - lama_y) > 1.0)):
+                        # Server menarik posisi kita kembali. Tandai supaya
+                        # `_send_move` berhenti mengirim prediksi sendiri.
+                        self._pos_dikoreksi = time.time()
+                        self._pos_koreksi_xy = (x, y)
+                        self._gerak_diblokir = True
+                        self._emit("pos_corrected", (x, y))
+                        log.warning(
+                            "[%s] posisi dikoreksi server (%.0f,%.0f) "
+                            "dari (%.0f,%.0f) — gerak dihentikan",
+                            self.label, x, y, lama_x, lama_y,
+                        )
                     self._emit("player_move", pl)
             except Exception as e:  # noqa: BLE001
                 log.debug("OnSetPos gagal: %s", e)
@@ -2719,6 +2748,40 @@ class Bot:
         # JEDA ini juga menahan dua skrip yang tidak sengaja jalan bersamaan.
         now = time.time()
         arah = 1 if kecepatan_x > 0 else (-1 if kecepatan_x < 0 else 0)
+
+        # -- koreksi server: JANGAN lanjut gerak --------------------------- #
+        # Bukti jurnal 18:00:19-18:00:21: server mengirim `OnSetPos` lima kali
+        # karena posisi kita ditolak, tapi bot terus mengirim State dengan
+        # prediksi sendiri. Itu pola teleport -> shadowban.
+        if self._gerak_diblokir:
+            if now - self._pos_dikoreksi < POS_KOREKSI_DIAM_S:
+                self._gerak_ditahan += 1
+                return False
+            self._gerak_diblokir = False
+            # Mulai lagi dari posisi yang DIAKUI server, bukan prediksi lama.
+            self._move_terakhir_pos = self._pos_koreksi_xy
+            if self.local is not None:
+                self.local.posx, self.local.posy = self._pos_koreksi_xy
+
+        # -- batas keras jarak per paket ----------------------------------- #
+        # Satu paket `State` maksimal 2 tile. Bukti jurnal 18:00:18: bot
+        # mengirim pos=(256,736) padahal posisi terakhir (2080,736) — 57 tile
+        # dalam SATU paket. Server langsung mengirim `OnSetPos` berulang dan
+        # itulah pola teleport yang memicu shadowban. Batas ini juga menahan
+        # bug pemanggil mana pun (skrip, FindPath, moveTile).
+        if self.local is not None:
+            lompat = max(abs(x - self.local.posx), abs(y - self.local.posy))
+            if lompat > 64.0:
+                self._gerak_ditahan += 1
+                if self._gerak_ditahan in (1, 10, 100):
+                    log.warning(
+                        "[%s] gerak ditolak: lompat %.0f px (%.0f tile) dari "
+                        "(%.0f,%.0f) ke (%.0f,%.0f)",
+                        self.label, lompat, lompat / 32.0,
+                        self.local.posx, self.local.posy, x, y,
+                    )
+                return False
+
         if (abs(x - self._move_terakhir_pos[0]) < 0.5
                 and abs(y - self._move_terakhir_pos[1]) < 0.5):
             return True

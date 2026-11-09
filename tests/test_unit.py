@@ -1409,6 +1409,52 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_koreksi_posisi_server() -> None:
+    bagian("7za. OnSetPos = koreksi gerak: bot berhenti, bukan menimpa")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import Bot, BotStatus, Player, POS_KOREKSI_DIAM_S
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.status = BotStatus.online
+    out = []
+    bot.send_raw = lambda p, ext=b"": out.append(p) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=2080.0, posy=736.0)
+    bot._last_rx_ts = time.time()
+    bot._move_terakhir_pos = (256.0, 736.0)
+
+    # Bukti jurnal 18:00:18-18:00:21: bot "teleport" 57 tile, server kirim
+    # OnSetPos lima kali, bot mengabaikannya.
+    bot._pos_dikoreksi = time.time()
+    bot._gerak_diblokir = True
+    bot._pos_koreksi_xy = (2080.0, 736.0)
+
+    cek("gerak ditolak saat dikoreksi",
+        bot._send_move(224.0, 736.0, kecepatan_x=-123.0) is False)
+    cek("tidak ada paket terkirim", len(out) == 0, str(len(out)))
+
+    # Jendela diam habis: gerak boleh, tapi HANYA dari posisi yang diakui
+    # server. Langkah jauh tetap ditolak batas keras.
+    time.sleep(POS_KOREKSI_DIAM_S + 0.05)
+    cek("lompatan jauh tetap ditolak setelah jeda",
+        bot._send_move(224.0, 736.0, kecepatan_x=-123.0) is False)
+    cek("posisi dipulihkan dari koreksi server",
+        abs(bot.local.posx - 2080.0) < 0.5, f"{bot.local.posx}")
+    cek("boleh gerak 1 tile setelah jeda",
+        bot._send_move(2048.0, 736.0, kecepatan_x=-123.0) is True)
+
+    # Batas keras: lompatan > 2 tile dalam satu paket selalu ditolak.
+    out.clear()
+    bot._gerak_diblokir = False
+    bot.local.posx, bot.local.posy = 2080.0, 736.0
+    cek("lompat 57 tile ditolak",
+        bot._send_move(256.0, 736.0, kecepatan_x=-123.0) is False)
+    cek("tidak ada paket untuk lompatan", len(out) == 0, str(len(out)))
+    cek("lompat 1 tile tetap boleh",
+        bot._send_move(2048.0, 736.0, kecepatan_x=-123.0) is True)
+
+
 def test_baca_store_dari_server() -> None:
     bagian("8a. OnStoreRequest: daftar item toko dari server")
     from lucifer.account import Account
@@ -2037,6 +2083,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_koreksi_posisi_server,
                test_baca_store_dari_server,
                test_batas_tile_tanpa_balas,
                test_watchdog_server_diam,
