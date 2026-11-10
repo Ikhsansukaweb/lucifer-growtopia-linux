@@ -459,7 +459,13 @@ class Bot:
         self._ambil_ts: dict[int, float] = {}
 
         # perilaku otomatis (dipakai skrip)
-        self.auto_reconnect = True
+        # MATI: reconnect otomatis = connect berulang tanpa izin user, dan itu
+        # sumber ercon yang sebenarnya. Bukti jurnal 16:31:07-16:31:19:
+        #   disconnected: timeout
+        #   reconnect: percobaan 1/5 dalam 2s   <- connect lagi sendiri
+        #   disconnect / Account Validated / Server tidak menjawab
+        # Connect harus dari tombol/permintaan user, bukan efek samping.
+        self.auto_reconnect = False
         # ⚠️ ANTI-ERCON (2026-10-04): sebelumnya loop reconnect menembak server
         # tiap 2 detik TANPA HENTI — inilah yang membuat IP kena rate-limit
         # ("ercon"/"keseringan minta login"). Sekarang: backoff eksponensial

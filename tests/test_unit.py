@@ -753,7 +753,9 @@ def test_logon_fail_cooldown() -> None:
     kirim(b, {"action": "log", "msg": "Fail to login. Please try again in 30 seconds."})
     cek("status jadi too_many_login (bukan logon_fail)",
         b.status == BotStatus.too_many_login, b.status)
-    cek("auto_reconnect tetap menyala sebelum logon_fail", b.auto_reconnect is True)
+    # auto_reconnect MATI sejak awal: reconnect otomatis = connect berulang
+    # tanpa izin user, sumber ercon (bukti jurnal 16:31:07 reconnect 1/5).
+    cek("auto_reconnect mati sejak awal", b.auto_reconnect is False)
 
     kirim(b, {"action": "logon_fail"})
     cek("logon_fail TIDAK menimpa too_many_login",
