@@ -30,3 +30,6 @@ data/world.dat
 .vscode/
 .idea/
 *.swp
+
+# Hasil build native
+native/build/
