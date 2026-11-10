@@ -72,14 +72,17 @@ local function clearWorld()
 
                 if safePath(x, y - 1) then
                     -- Pukul sampai tile kosong. TIDAK memakai batas jumlah
-                    -- pukulan tetap: tiap blok beda (Rock ~10, Dirt ~2), dan
-                    -- batas 8 dulu membuat Rock selalu dilewati.
-                    -- Yang dipakai: berhenti kalau server berhenti memproses
-                    -- pukulan kita (TileBalas naik terus tanpa balasan).
+                    -- pukulan tetap: tiap blok beda (Rock ~10, Dirt ~2).
+                    -- Berhenti bila tile ditolak server (punch_locked /
+                    -- tidak dibalas) supaya tidak menembak paket sia-sia.
                     while GetTile(x, y).fg ~= 0
                        or GetTile(x, y).bg ~= 0 do
                         if TileBalas() >= MAX_DIAM then
                             log("Lewati (server tidak membalas)", x, y)
+                            break
+                        end
+                        if TileDitolak(x, y) then
+                            log("Lewati (tile terkunci)", x, y)
                             break
                         end
                         punch(x, y)

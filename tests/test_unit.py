@@ -1409,6 +1409,46 @@ def test_tile_change_saring_jangkau_dan_jeda() -> None:
         f"{jeda:.2f}s")
 
 
+def test_gerbang_tidak_deadlock() -> None:
+    bagian("7zc. Gerbang aksi tidak boleh mengunci bot selamanya")
+    import time
+    from lucifer.account import Account
+    from lucifer.bot import AKSI_TUNGGU_BALAS_S, Bot, BotStatus, Player
+    from lucifer.protocol import Tank
+
+    bot = Bot(account=Account(username="uji", password="", method="legacy",
+                              label="uji"), label="uji")
+    bot.host = object()
+    bot.status = BotStatus.online
+    out = []
+    bot.send_raw = lambda p, ext=b"": out.append(p) or True  # type: ignore[method-assign]
+    bot.local = Player(netid=1, name="uji", posx=2112.0, posy=768.0)
+    bot._last_rx_ts = time.time()
+
+    # Bug "cuma sebagian di-break terus diem": `punch_locked` adalah BALASAN
+    # server, tapi dulu handler-nya return tanpa membuka gerbang.
+    cek("pukul pertama terkirim", bot.hit(64, 24) is True)
+    bot._hit_terakhir = (64, 24)
+    bot._on_play_sfx("audio/punch_locked.wav")
+    cek("punch_locked membuka gerbang", bot._aksi_menunggu is False)
+    cek("tile ditandai terkunci", (64, 24) in bot._tile_terkunci)
+    cek("tile lain tetap bisa dipukul", bot.hit(65, 24) is True)
+
+    # Timeout: tile gagal DILEWATI, bot lanjut (bukan mati total).
+    bot._last_rx_ts = time.time()
+    bot._aksi_mulai_ts = time.time() - AKSI_TUNGGU_BALAS_S - 1
+    cek("setelah timeout bot lanjut", bot.hit(66, 24) is True)
+    cek("tile yang gagal ditandai", (65, 24) in bot._tile_terkunci)
+
+    # Penolakan place juga membuka gerbang.
+    bot._aksi_menunggu = True
+    bot._aksi_mulai_ts = time.time()
+    bot._place_terakhir = (70, 24)
+    bot._place_terakhir_item = 2
+    bot._on_play_sfx("audio/cant_place_tile.wav")
+    cek("cant_place_tile membuka gerbang", bot._aksi_menunggu is False)
+
+
 def test_budget_paket_dan_tile_terkunci() -> None:
     bagian("7zb. Anti-ercon: budget paket + tile terkunci")
     import time
@@ -2123,6 +2163,7 @@ def main() -> int:
                test_merge_drop_total_bukan_tambahan, test_echo_break_konfirmasi,
                test_arti_value_item_change_object, test_tabel_arti_tank,
                test_tile_change_saring_jangkau_dan_jeda,
+               test_gerbang_tidak_deadlock,
                test_budget_paket_dan_tile_terkunci,
                test_koreksi_posisi_server,
                test_baca_store_dari_server,

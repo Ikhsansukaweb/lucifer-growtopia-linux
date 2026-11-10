@@ -517,6 +517,7 @@ class LuaEngine:
         g.ServerAlive = lambda bot=None: self._server_alive(bot)
         g.TotalHit = lambda bot=None: self._total_hit(bot)
         g.TileBalas = lambda bot=None: self._tile_balas(bot)
+        g.TileDitolak = lambda x, y, bot=None: self._tile_ditolak(x, y, bot)
 
         # --- enum ---------------------------------------------------------- #
         for enum_name, members in ENUMS.items():
@@ -1468,6 +1469,16 @@ class LuaEngine:
         """Jumlah `TileApplyDamage` yang sudah diterima bot ini."""
         b = self._resolve_bot(bot)
         return int(b.total_hit_diterima()) if b else 0
+
+    def _tile_ditolak(self, x, y, bot=None) -> bool:
+        """True bila server menyatakan tile ini terkunci/ditolak.
+
+        Skrip memakainya untuk melewati tile, bukan menembaknya berulang.
+        """
+        b = self._resolve_bot(bot)
+        if not b:
+            return False
+        return (int(x), int(y)) in b._tile_terkunci
 
     def _tile_balas(self, bot=None) -> int:
         """Berapa `tileChange` terakhir yang belum dibalas server.

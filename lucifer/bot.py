@@ -505,6 +505,10 @@ class Bot:
         # membalas aksi terakhir; selama True tidak ada aksi baru dikirim.
         self._aksi_menunggu = False
         self._aksi_mulai_ts = 0.0
+        # Tile aksi yang sedang ditunggu balasannya. Disimpan terpisah karena
+        # `_hit_terakhir` sudah berubah ke tile berikutnya sebelum timeout
+        # diperiksa (bug: tile yang ditandai gagal bisa tile yang salah).
+        self._aksi_tile: Optional[tuple[int, int]] = None
         self._tile_blokir_dilaporkan = False
         # Rem paket gerak. Gerakan maju-mundur terlalu cepat terlihat sebagai
         # speedhack/teleport oleh server dan berujung shadowban.
@@ -1473,6 +1477,10 @@ class Bot:
             return
         if "punch_locked" in f:
             self._tile_terkunci[tile] = time.time()
+            # WAJIB: ini BALASAN server. Tanpa membuka gerbang, satu tile
+            # terkunci membuat `_aksi_menunggu` tertutup selamanya dan bot
+            # berhenti mukul SEMUA tile ("cuma sebagian di-break terus diem").
+            self._aksi_dibalas()
             self.catat_paket("in", 0,
                              f"PUKUL DITOLAK server di tile={tile} "
                              f"(punch_locked) — tile terkunci")
@@ -1481,6 +1489,8 @@ class Bot:
         if "cant_place_tile" in f:
             item = self._place_terakhir_item
             self._aksi_tolak[tile] = ("place", item, time.time())
+            # Penolakan place juga BALASAN server: buka gerbang.
+            self._aksi_dibalas()
             self.catat_paket("in", 0,
                              f"PLACE DITOLAK server di tile={tile} "
                              f"item={item} (cant_place_tile)")
@@ -2545,6 +2555,7 @@ class Bot:
         # (TileApplyDamage / echo TileChangeRequest) akan membukanya.
         self._aksi_menunggu = True
         self._aksi_mulai_ts = time.time()
+        self._aksi_tile = (int(x), int(y))
         self._tile_terakhir_ts = time.time()
         self._tile_tanpa_balas += 1
 
@@ -2615,20 +2626,29 @@ class Bot:
         tunggu = time.time() - self._aksi_mulai_ts
         if tunggu < AKSI_TUNGGU_BALAS_S:
             return False
-        # Sudah lewat batas: server tidak membalas. Berhenti kirim aksi.
+        # Lewat batas: server tidak membalas aksi itu. JANGAN diulang, tapi
+        # juga JANGAN mengunci bot selamanya (bug: "cuma sebagian di-break
+        # terus diem"). Tandai tile terakhir sebagai gagal supaya dilewati,
+        # lalu buka gerbang untuk tile berikutnya.
+        gagal = self._aksi_tile or self._hit_terakhir or self._place_terakhir
+        if gagal is not None:
+            self._tile_terkunci[gagal] = time.time()
         if not self._tile_blokir_dilaporkan:
             self._tile_blokir_dilaporkan = True
             log.warning(
-                "[%s] aksi tidak dibalas server %.1f dtk — BERHENTI "
-                "mengirim aksi (tidak akan lanjut sampai server membalas)",
-                self.label, tunggu,
+                "[%s] aksi tidak dibalas server %.1f dtk — tile %s "
+                "dilewati, lanjut ke tile berikutnya",
+                self.label, tunggu, gagal,
             )
-        return False
+        self._aksi_menunggu = False
+        self._aksi_mulai_ts = 0.0
+        return True
 
     def _aksi_dibalas(self) -> None:
         """Server membalas aksi kita -> boleh kirim aksi berikutnya."""
         self._aksi_menunggu = False
         self._aksi_mulai_ts = 0.0
+        self._aksi_tile = None
         self._tile_tanpa_balas = 0
         self._tile_blokir_dilaporkan = False
 
