@@ -1162,7 +1162,12 @@ void App::start_backend() {
     std::string py = repo_ + "/.venv/bin/python";
     if (access(py.c_str(), X_OK) != 0) py = "python3";
     std::vector<std::string> argv = {
-        py, "-m", "lucifer.cli", "web", "--port", std::to_string(port_)};
+        // `--no-connect` WAJIB: tanpa ini backend langsung connect sendiri
+        // setiap GUI dibuka. Kalau GUI dibuka beberapa kali (atau backend
+        // masih hidup), akun connect berulang -> ercon/shadowban.
+        // Connect harus dari tombol Connect, bukan efek samping membuka GUI.
+        py, "-m", "lucifer.cli", "web", "--port", std::to_string(port_),
+        "--no-connect"};
     std::vector<char *> cargv;
     for (auto &a : argv) cargv.push_back(const_cast<char *>(a.c_str()));
     cargv.push_back(nullptr);
