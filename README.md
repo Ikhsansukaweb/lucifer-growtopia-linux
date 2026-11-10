@@ -79,6 +79,62 @@ VPN/proxy lewat field `proxy` akun.
 
 ---
 
+## Anti-ercon: aturan yang dipakai bot
+
+Bagian ini ada karena kesalahan yang sama berulang: bot menembak server
+lebih cepat daripada server memprosesnya, lalu IP diblokir.
+
+**Aturan satu-satunya:** kirim **satu** aksi → tunggu server membalas →
+baru boleh kirim lagi. Kalau tidak dibalas, berhenti.
+
+Yang ditegakkan di kode (semua berlaku untuk fitur **dan** skrip Lua):
+
+| Penjaga | Nilai | Kenapa |
+|---|---|---|
+| `Bot._tunggu_balasan_aksi()` | `AKSI_TUNGGU_BALAS_S = 2.0` | satu aksi menunggu balasan; lewat batas → tile ditandai gagal & dilewati |
+| `Bot.auto_reconnect` | `False` | connect **hanya** dari tombol/permintaan user |
+| `Bot._send_move` | `MOVE_JEDA_MIN_S = 0.26` | laju klien asli 123 px/detik = 1 tile / 260 ms |
+| `Bot._send_move` | maks 64 px per paket | menolak lompatan/teleport |
+| `Bot._send_move` | `POS_KOREKSI_DIAM_S = 2.0` | `OnSetPos` = server menolak posisi → gerak berhenti |
+| `Bot._tile_change` | `JANGKAU_TILE = 4` | server menolak tile di luar 4 tanpa kabar |
+| `Bot._tile_change` | `PAKET_MAKS_PER_DETIK = 10` | batas laju paket total |
+| `Bot._tile_terkunci` | `TILE_TERKUNCI_INGAT_S = 300` | `punch_locked` / `cant_place_tile` = tile dilewati, bukan diulang |
+| `Runner` | satu skrip | klik "Jalankan" kedua ditolak selama skrip pertama hidup |
+
+### Paket balasan yang membuka gerbang aksi
+
+Hanya balasan **milik bot sendiri**:
+
+- `TileApplyDamage` (type 8) dengan `net_id` sendiri
+- echo `TileChangeRequest` (type 3) dengan `net_id` sendiri
+- `audio/punch_locked.wav` — penolakan, tapi tetap **balasan**
+- `audio/cant_place_tile.wav` — penolakan place
+
+Echo pemain lain **tidak** membuka gerbang. `punch_locked` dan
+`cant_place_tile` **wajib** membukanya — kalau tidak, satu tile terkunci
+membuat bot diam selamanya ("cuma sebagian di-break terus diem").
+
+### API Lua terkait
+
+```lua
+TileBalas()        -- berapa aksi terakhir yang belum dibalas
+TileDitolak(x, y)  -- true bila server menyatakan tile ini terkunci
+ServerAlive()      -- false bila tidak ada paket masuk (koneksi mati)
+TotalHit()         -- jumlah TileApplyDamage yang sudah diterima
+```
+
+### Yang **jangan** dilakukan
+
+- Klik Connect berulang saat `logon_fail` / `too_many_login` — tiap
+  percobaan memperpanjang cooldown.
+- Membuka beberapa GUI sekaligus — dulu tiap GUI menyalakan backend yang
+  langsung auto-connect. Sekarang GUI memakai `--no-connect`.
+- Menjalankan backend dari folder lain — path `data/` & `scripts/`
+  di-resolve dari folder repo (`ROOT` di `runner.py`), bukan cwd, tapi
+  tetap: jalankan dari repo supaya tidak bingung.
+
+---
+
 ## Pasang
 
 ```bash
@@ -350,6 +406,50 @@ Kalau kamu menempel blok `client_data` mentah, ltoken diambil otomatis —
 pengurainya ada di sisi browser (JS) **dan** di `tools/ltoken.py`, keduanya
 mendukung tiga bentuk: per baris, satu baris dipisah `|`, dan base64.
 
+### Store / Auto Buy
+
+Toko Growtopia **bukan** daftar `item|`. Server mengirim seluruh isi toko
+sebagai markdown UI lewat `OnStoreRequest` (variant CallFunction):
+
+```
+enable_tabs|<n>
+add_tab|<nama>
+add_banner|...
+embed_data|item_id|<id>|price|...|count|...     <- SATU entri item
+add_button|...                                    <- tombol entri (25 field)
+add_image|... / add_custom_button|...
+```
+
+Satu **pack** berisi beberapa `embed_data`, jadi daftar item harus dibaca
+dari situ, bukan dari satu id.
+
+Permintaan beli memakai literal di `libgrowtopia.so` @`0x6fe5f1`:
+
+```
+action|buy
+item|<kode atau id>
+```
+
+Satu field saja. (`itemID` dipakai `trash` / `mod_trade` / `itemfavourite`,
+**bukan** `buy`.)
+
+Konfirmasi pembelian:
+
+| Paket | Arti |
+|---|---|
+| `OnSetBux(val, ...)` | gem berubah → biaya terpotong |
+| `ModifyItemInventory` | barang masuk inventaris |
+| `OnStorePurchaseResult` / `OnStoreBuyConfirm` | pembelian IAP (gem asli) |
+
+Bot menyimpan `store_raw` (payload mentah) dan `store_items` (hasil parse
+`_baca_store`). Auto Buy menunggu gem berubah setelah mengirim `buy`; kalau
+gem tidak berubah dalam `TIMEOUT_BALAS_MS`, dihitung gagal.
+
+> **Belum selesai:** pemetaan 25 field `add_button` dan tombol yang dipakai
+> `dialog_return` saat membeli **pack**. Butuh satu payload `OnStoreRequest`
+> nyata (`LUCIFER_DUMP=1` → `/tmp/opencode/dump_store.bin`) sebelum
+> Auto Buy diarahkan ke entri pack.
+
 ### Fitur otomasi (padanan deltaX)
 
 `lucifer/features.py` mengisi menu yang **bisa** dibawa ke klien protokol —
@@ -368,6 +468,7 @@ dicocokkan.
 | FindPath | `findpath_config_blockjump`, `findpath_config_teleport_path` | BFS yang menghitung tile terpasang sebagai penghalang |
 | Replay | `replay_record_active`, `replay_play_active`, `replay_loop` | rekam aksi keluar lalu putar ulang (JSON di `data/replay/`) |
 | Growscan | `cheat_growscan_open` | pindai blok/tanaman/objek jatuh di dunia |
+| **Auto Buy** | `autobuy_start`, `autobuy_set_item`, `autobuy_set_harga` | beli di Store saat gem cukup (`action\|buy\nitem\|<kode>`), berhenti bila gem kurang |
 | ModExit | `modexit_*` | keluar dunia otomatis saat moderator terdeteksi |
 | Chat commands | `cmd_warp`, `cmd_back`, `cmd_finditem`, `cmd_gscan`, `cmd_pullall`, `cmd_alias`, `cmd_bind` | perintah `/...` yang ditangani lokal, tidak dikirim ke server |
 
@@ -477,7 +578,7 @@ Lima tab: **Bots · Executor · Proxy · Database · Settings**.
 |---|---|
 | Daftar bot | kolom PILIH (centang) · BOT · NAMA · **LEVEL** · **MALADY** · PING · STATUS · PROXY · DUNIA · POSISI · GEMS |
 | Panel kiri | Connect/Disconnect (+Semua), panah gerak, Warp, Respawn, Collect, **Profil**, kelola akun |
-| Detail bot | Fitur (13 kategori skema deltaX) · Peta · Console · Chat · Inventaris · Paket · Info |
+| Detail bot | Fitur (14 kategori: 13 deltaX + Auto Buy) · Peta · Console · Chat · Inventaris · Paket · Info |
 | Proxy | pool SOCKS5, uji UDP relay + ENet handshake sungguhan |
 | Database | cari item + sprite 24×24 |
 
@@ -567,6 +668,8 @@ runThread(pesan_berkala, "Bot aktif", 10000)
 | `06_pathfinding.lua` | `getPath`/`moveTile`, `collect`, hitung blok di dunia |
 | `07_login_google.lua` | semua jenis login: LEGACY/GROWID/GOOGLE/TOKEN/APPLE |
 | `08_delta_features.lua` | autofarm/autocollect/spammer/findpath/replay lewat alias deltaX |
+| `baru.lua` | clear world (TornAi): pukul sampai kosong, lewati tile terkunci |
+| `isan.lua` | clear world + penjaga anti-ercon (`TileBalas`/`TileDitolak`) |
 
 ---
 
@@ -575,9 +678,10 @@ runThread(pesan_berkala, "Bot aktif", 10000)
 Tanpa jaringan (cepat, dipakai tiap perubahan):
 
 ```bash
-.venv/bin/python tests/test_unit.py      # 278 lulus
-.venv/bin/python tests/test_features.py  # 97 lulus
-.venv/bin/python tests/test_modmenu.py   # 347 lulus
+.venv/bin/python tests/test_unit.py      # 408 lulus
+.venv/bin/python tests/test_features.py  # 118 lulus
+.venv/bin/python tests/test_modmenu.py   # 358 lulus
+.venv/bin/python tests/test_web.py       # 33 lulus
 ```
 
 Semua memakai `unittest` bawaan Python — tidak perlu pytest. Skrip mencetak
@@ -610,7 +714,7 @@ lucifer-linux/
 │   ├── items.py          # pembaca items.dat (16.480 item v27)
 │   ├── world.py          # parser dunia, tile update (type 5/6), flag tile
 │   ├── bot.py            # bot: koneksi, state, aksi (say/warp/place/hit/...)
-│   ├── features.py       # otomasi gaya deltaX + SKEMA_FITUR (13 kategori, 158 kontrol)
+│   ├── features.py       # otomasi gaya deltaX + SKEMA_FITUR (14 kategori)
 │   ├── lua_api.py        # API Lua Lucifer V1.8 lengkap
 │   ├── compat_deltax.py  # jembatan nama fungsi Lua gaya deltaX
 │   ├── proxy.py          # SOCKS5: uji TCP/UDP/ENet
@@ -629,6 +733,27 @@ lucifer-linux/
 ├── Makefile
 └── requirements.txt
 ```
+
+---
+
+## Temuan protokol yang mengubah kode
+
+Semua di bawah dibuktikan dari paket nyata (jurnal `in`/`out`) atau literal
+di `libgrowtopia.so` 5.58 — bukan asumsi.
+
+| Temuan | Bukti | Akibat kalau salah |
+|---|---|---|
+| `tileChange` = Tank **type 3**; `value` 18 = Fist, 32 = Wrench, selain itu id item | paket klien asli | pukul mengirim Wrench, blok tak pernah pecah |
+| `vector_x/vector_y` = posisi **PEMAIN**, `int_x/int_y` = tile | `place tile=(52,26) pos=(1606,834)` | server balas `cant_place_tile` |
+| `OnSetPos` saat bergerak = **koreksi posisi**, bukan info spawn | `18:00:19 in OnSetPos (2080,736)` ×5 | bot teleport → shadowban |
+| Nama dari server berakhiran dua backtick (`OnSpawn` mengirim `Isanlucuuu` + dua backtick) | `name\|` di `OnSpawn` | bot salah kenal diri sendiri → echo-nya dibuang → peta tidak update |
+| Pola kode warna harus menerima backtick sebagai karakter kode | pola lama `[a-zA-Z0-9#]` tidak cocok dengan dua backtick | nama tidak pernah cocok dengan nama akun |
+| `audio/punch_locked.wav` = tile terkunci | 8 pukulan ditolak tile yang sama | bot mukul selamanya → ercon |
+| Echo `TileChangeRequest` pemain lain tetap **mengubah peta** | `in type=3 netid=2` | peta bot buta terhadap perubahan orang lain |
+| Growtopia **tidak** meng-echo `State` milik sendiri | 111 `out State` → 0 `in State` | menunggu echo = bot diam selamanya |
+| `int_x` pada tank type 11 = jumlah item (count) | `out type=11 tile=(30,0) value=11 int_x=30` | `collectObject` mengirim 0 → selalu ditolak |
+| uid objek = counter `last_uid + 1` | drop 10, 11, 12 | uid karangan → server tolak |
+| `OnStoreRequest` = markdown UI, bukan `item\|` | parser `0x17483f8` | isi toko hilang total |
 
 ---
 
